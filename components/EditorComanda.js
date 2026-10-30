@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from './AppShell';
-import { Hoja, Chips, Campo, Cargando } from './ui';
+import { Hoja, Chips, Campo, Cargando, Confirmar } from './ui';
 import { money, num, cant, CUENTAS } from '@/lib/utils';
 import { interpretarPedido } from '@/lib/voz';
 
@@ -58,8 +58,9 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
   const [hojaVoz, setHojaVoz] = useState(false);
   const [textoVoz, setTextoVoz] = useState('');
   const [grabando, setGrabando] = useState(false);
-  const [interpretado, setInterpretado] = useState(null);
   const [guardando, setGuardando] = useState(false);
+  const [confirmar, setConfirmar] = useState(null);
+  const textoRef = useRef(null);
   const recRef = useRef(null);
   const baseVozRef = useRef('');
 
@@ -154,7 +155,11 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
   // ---- voz
   const SR = typeof window !== 'undefined' ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
   function empezarVoz() {
-    if (!SR) { avisar('Usá el micrófono del teclado del iPhone 🎤', 'error'); return; }
+    if (!SR) {
+      textoRef.current?.focus();
+      avisar('Tocá el 🎤 del teclado del iPhone y dictá', 'ok');
+      return;
+    }
     try {
       const r = new SR();
       r.lang = 'es-AR';
@@ -166,20 +171,22 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
         for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript + ' ';
         setTextoVoz(baseVozRef.current + t.trim());
       };
-      r.onerror = (e) => { if (e.error !== 'no-speech' && e.error !== 'aborted') avisar('Micrófono: ' + e.error, 'error'); };
+      r.onerror = (e) => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          textoRef.current?.focus();
+          avisar('Sin permiso de micrófono: usá el 🎤 del teclado', 'error');
+        } else if (e.error !== 'no-speech' && e.error !== 'aborted') avisar('Micrófono: ' + e.error, 'error');
+      };
       r.onend = () => { setGrabando(false); recRef.current = null; };
       recRef.current = r;
       r.start();
       setGrabando(true);
     } catch (e) {
-      avisar('No se pudo usar el micrófono', 'error');
+      textoRef.current?.focus();
+      avisar('Usá el 🎤 del teclado del iPhone', 'error');
     }
   }
   function pararVoz() { recRef.current?.stop(); setGrabando(false); }
-  function interpretar(t = textoVoz) {
-    if (!articulos) return;
-    setInterpretado(interpretarPedido(t, articulos));
-  }
   function confirmarVoz() {
     interpretado.items.forEach((r) => (r.tipo === 'mitad' ? agregarMitad(r.a, r.b, r.cantidad) : agregar(r.a, r.cantidad)));
     avisar(`${interpretado.items.length} productos agregados`);
@@ -189,9 +196,16 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
   }
 
   // ---- guardar
-  async function guardar(cobrar) {
+  function guardar(cobrar) {
     if (!items.length) { avisar('Agregá al menos un producto', 'error'); return; }
-    if (tipoEntrega === 'delivery' && !cliente.direccion.trim() && !confirm('No cargaste dirección. ¿Guardar igual?')) return;
+    if (tipoEntrega === 'delivery' && !cliente.direccion.trim()) {
+      setConfirmar({ titulo: 'Falta la dirección', mensaje: 'Es delivery y no cargaste dirección. ¿Guardar igual?', boton: 'Guardar igual', onOk: () => guardarYa(cobrar) });
+      return;
+    }
+    guardarYa(cobrar);
+  }
+
+  async function guardarYa(cobrar) {
     setGuardando(true);
     try {
       const p = {
@@ -214,6 +228,13 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
     }
   }
 
+  // el pedido se interpreta en vivo mientras se dicta o se pega
+  const interpretado = useMemo(
+    () => (textoVoz.trim() && articulos ? interpretarPedido(textoVoz, articulos) : null),
+    [textoVoz, articulos]
+  );
+  const setInterpretado = () => {};
+
   const articulosVisibles = useMemo(() => (articulos || []).filter((a) => rubroSel === 'todos' || a.rubro_id === rubroSel), [articulos, rubroSel]);
   const paraMitad = (articulos || []).filter((a) => a.permite_mitad);
   const envios = (config?.envios_sugeridos || []).map(Number);
@@ -223,15 +244,16 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
   return (
     <>
       <header className="cabecera">
-        <div>
+        <div className="cab-izq">
+          <img className="cab-logo" src="/logo-chico.png" alt="" />
           <h1>{editando ? `Editar #${comanda.numero}` : 'Nueva comanda'}</h1>
         </div>
-        <button className="btn borde chico" onClick={() => router.back()}>Cancelar</button>
+        <button className="btn borde chico" onClick={() => (items.length ? setConfirmar({ titulo: '¿Salir sin guardar?', mensaje: 'Se pierde lo que cargaste en esta comanda.', boton: 'Salir', peligro: true, onOk: () => router.push(editando ? `/comanda/${comanda.id}` : '/') }) : router.push('/'))}>✕ Salir</button>
       </header>
 
       {/* CLIENTE */}
       <div className="tarjeta">
-        <h2>Cliente</h2>
+        <h2>👤 Cliente</h2>
         <div style={{ position: 'relative' }}>
           <input placeholder="Nombre, teléfono o dirección…" value={cliente.nombre} onChange={(e) => buscarCliente(e.target.value)} autoComplete="off" />
           {sugerencias.length > 0 && (
@@ -266,13 +288,14 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
 
       {/* PRODUCTOS */}
       <div className="tarjeta">
-        <div className="fila-btns" style={{ marginBottom: 10 }}>
-          <button className="btn primario" onClick={() => { setHojaVoz(true); setInterpretado(null); }}>🎤 Dictar / pegar pedido</button>
-        </div>
+        <button className="dictar" style={{ marginBottom: 12 }} onClick={() => { setHojaVoz(true); setInterpretado(null); }}>
+          <span className="dictar-ico">🎤</span>
+          <span><b>Dictar o pegar el pedido</b><span>“dos muzza, media napo media bondiola y una docena de sfijas”</span></span>
+        </button>
         <Chips
           valor={rubroSel}
           onCambio={setRubroSel}
-          opciones={[{ id: 'todos', label: 'Todos' }, ...rubros.map((r) => ({ id: r.id, label: r.nombre }))]}
+          opciones={[{ id: 'todos', label: 'Todo' }, ...rubros.map((r) => ({ id: r.id, label: `${emojiRubro(r.nombre)} ${r.nombre}` }))]}
         />
         <div className="productos">
           {paraMitad.length > 1 && (rubroSel === 'todos' || paraMitad.some((a) => a.rubro_id === rubroSel)) && (
@@ -284,7 +307,7 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
           {articulosVisibles.map((a) => {
             const n = cantEnCarrito(a.id);
             return (
-              <button key={a.id} className="prod" onClick={() => agregar(a)}>
+              <button key={a.id} className={n > 0 ? 'prod en-pedido' : 'prod'} onClick={() => agregar(a)}>
                 {n > 0 && <span className="prod-cant">{cant(n)}</span>}
                 <div className="prod-nom">{a.nombre}</div>
                 <div className="prod-pre">{money(a.precio)}</div>
@@ -297,12 +320,12 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
 
       {/* PEDIDO */}
       <div className="tarjeta">
-        <h2>Pedido</h2>
+        <h2>🧾 Pedido</h2>
         {items.length === 0 ? <div className="suave chico-t">Tocá productos de arriba o dictá el pedido.</div> : items.map((x) => (
           <div key={x.key} className="carrito-item">
             <div className="item-cuerpo" onClick={() => setItemEdit({ ...x, precioTxt: String(x.precio_unit) })}>
               <div className="item-titulo">{x.descripcion}</div>
-              <div className="item-sub">{money(x.precio_unit)} c/u · tocá para editar</div>
+              <div className="item-sub">{money(x.precio_unit)} c/u ✏️</div>
             </div>
             <div className="stepper">
               <button onClick={() => cambiarCant(x.key, -1)}>−</button>
@@ -316,7 +339,7 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
 
       {/* ENTREGA */}
       <div className="tarjeta">
-        <h2>Entrega</h2>
+        <h2>🛵 Entrega</h2>
         <Chips valor={tipoEntrega} onCambio={setTipoEntrega} opciones={[{ id: 'delivery', label: '🛵 Delivery' }, { id: 'retiro', label: '🏠 Retira en local' }]} />
         {tipoEntrega === 'delivery' && (
           <>
@@ -341,7 +364,7 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
 
       {/* PAGO */}
       <div className="tarjeta">
-        <h2>Pago</h2>
+        <h2>💵 Pago</h2>
         <Chips valor={formaPago} onCambio={setFormaPago} opciones={CUENTAS.map((c) => ({ id: c.id, label: `${c.icono} ${c.nombre}` }))} />
         {formaPago === 'efectivo' && (
           <div className="grid2" style={{ marginTop: 12 }}>
@@ -349,7 +372,7 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
               <input inputMode="numeric" placeholder="$" value={pagaCon} onChange={(e) => { setPagaCon(e.target.value); setVueltoManual(false); }} />
             </Campo>
             {tipoEntrega === 'delivery' && (
-              <Campo label="Vuelto que lleva el cadete">
+              <Campo label="Vuelto al cadete">
                 <input inputMode="numeric" placeholder="$0" value={vuelto} onChange={(e) => { setVuelto(e.target.value); setVueltoManual(true); }} />
               </Campo>
             )}
@@ -375,8 +398,8 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
             <span className="bt-total">{money(total)}</span>
           </div>
           <div className="fila-btns">
-            <button className="btn borde" disabled={guardando} onClick={() => guardar(false)}>Guardar sin cobrar</button>
-            <button className="btn verde" disabled={guardando} onClick={() => guardar(true)}>Guardar y cobrar</button>
+            <button className="btn borde" disabled={guardando} onClick={() => guardar(false)}>⏳ Guardar sin cobrar</button>
+            <button className="btn verde" disabled={guardando} onClick={() => guardar(true)}>✔ Guardar y cobrar</button>
           </div>
         </div>
       </div>
@@ -425,21 +448,21 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
       {/* HOJA VOZ */}
       <Hoja abierta={hojaVoz} titulo="Dictar o pegar pedido" onCerrar={() => { pararVoz(); setHojaVoz(false); }}
         pie={interpretado && interpretado.items.length > 0 ? (
-          <button className="btn verde bloque" onClick={confirmarVoz}>Agregar {interpretado.items.length} productos al pedido</button>
+          <button className="btn verde bloque grande" onClick={() => { pararVoz(); confirmarVoz(); }}>✔ Agregar {interpretado.items.length} {interpretado.items.length === 1 ? 'producto' : 'productos'} al pedido</button>
         ) : (
-          <button className="btn primario bloque" disabled={!textoVoz.trim()} onClick={() => { pararVoz(); interpretar(); }}>Interpretar pedido</button>
+          <button className="btn primario bloque" disabled>{grabando ? 'Escuchando…' : 'Dictá o pegá el pedido'}</button>
         )}>
-        <p className="suave chico-t" style={{ marginTop: 0 }}>
-          Decí por ejemplo: <i>“una muzza, dos fugazzeta, media napolitana media calabresa y una pepsi”</i>. También podés <b>pegar el mensaje de WhatsApp</b> del cliente.
+        <p className="suave chico-t" style={{ marginTop: 0 }} hidden={!!textoVoz}>
+          Tocá 🎤 y decí por ejemplo: <i>“dos muzza, media napolitana media bondiola, una docena de sfijas y una pepsi”</i>. También podés <b>pegar el mensaje de WhatsApp</b> del cliente. Si el 🎤 rojo no anda, usá el 🎤 del teclado del iPhone.
         </p>
         <div className="voz">
-          <textarea value={textoVoz} onChange={(e) => { setTextoVoz(e.target.value); setInterpretado(null); }} placeholder="Tocá 🎤 y hablá, o pegá el mensaje…" />
+          <textarea ref={textoRef} value={textoVoz} onChange={(e) => { setTextoVoz(e.target.value); setInterpretado(null); }} placeholder="Tocá 🎤 y hablá, o pegá el mensaje…" />
           <button className={grabando ? 'btn-mic grabando' : 'btn-mic'} onClick={() => (grabando ? pararVoz() : empezarVoz())}>{grabando ? '■' : '🎤'}</button>
         </div>
         {grabando && <div className="aviso" style={{ marginTop: 10 }}>🎙️ Escuchando… tocá ■ cuando termines</div>}
         {interpretado && (
           <div style={{ marginTop: 14 }}>
-            {interpretado.items.length === 0 ? <div className="aviso rojo">No reconocí productos. Probá de nuevo o cargá alias en Codificación.</div> : (
+            {interpretado.items.length === 0 ? (grabando ? null : <div className="aviso rojo">No reconocí productos. Probá de nuevo o cargá alias en Codificación.</div>) : (
               <div className="lista">
                 {interpretado.items.map((r, i) => (
                   <div className="item" key={i}>
@@ -456,6 +479,17 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
           </div>
         )}
       </Hoja>
+      <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
     </>
   );
+}
+
+export function emojiRubro(nombre) {
+  const n = String(nombre || '').toLowerCase();
+  if (n.includes('pizza')) return '🍕';
+  if (n.includes('sfij') || n.includes('empan')) return '🥟';
+  if (n.includes('bebi') || n.includes('gaseo')) return '🥤';
+  if (n.includes('congel')) return '🧊';
+  if (n.includes('postre')) return '🍰';
+  return '🍽️';
 }

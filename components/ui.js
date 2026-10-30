@@ -1,5 +1,5 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 export function Hoja({ abierta, titulo, onCerrar, children, pie }) {
   useEffect(() => {
@@ -23,21 +23,48 @@ export function Hoja({ abierta, titulo, onCerrar, children, pie }) {
   );
 }
 
-export function Cabecera({ titulo, sub, derecha }) {
+// Confirmación linda (reemplaza confirm() del navegador)
+export function Confirmar({ datos, onCerrar }) {
+  const [texto, setTexto] = useState('');
+  const [trabajando, setTrabajando] = useState(false);
+  useEffect(() => { setTexto(''); setTrabajando(false); }, [datos]);
+  if (!datos) return null;
+  async function ok() {
+    setTrabajando(true);
+    try { await datos.onOk(texto); onCerrar(); } finally { setTrabajando(false); }
+  }
+  return (
+    <Hoja abierta titulo={datos.titulo} onCerrar={onCerrar}
+      pie={
+        <div className="fila-btns">
+          <button className="btn borde" onClick={onCerrar}>Cancelar</button>
+          <button className={datos.peligro ? 'btn primario' : 'btn verde'} disabled={trabajando} onClick={ok}>{datos.boton || 'Confirmar'}</button>
+        </div>
+      }>
+      {datos.mensaje && <p style={{ marginTop: 0, fontSize: 15 }}>{datos.mensaje}</p>}
+      {datos.pedirTexto && <input placeholder={datos.pedirTexto} value={texto} onChange={(e) => setTexto(e.target.value)} />}
+    </Hoja>
+  );
+}
+
+export function Cabecera({ titulo, sub, derecha, logo = true }) {
   return (
     <header className="cabecera">
-      <div>
-        <h1>{titulo}</h1>
-        {sub && <div className="sub">{sub}</div>}
+      <div className="cab-izq">
+        {logo && <img className="cab-logo" src="/logo-chico.png" alt="" />}
+        <div style={{ minWidth: 0 }}>
+          <h1>{titulo}</h1>
+          {sub && <div className="sub">{sub}</div>}
+        </div>
       </div>
       {derecha && <div className="cab-der">{derecha}</div>}
     </header>
   );
 }
 
-export function Chips({ opciones, valor, onCambio, chico }) {
+export function Chips({ opciones, valor, onCambio, chico, envuelve }) {
   return (
-    <div className={chico ? 'chips chico' : 'chips'}>
+    <div className={`chips${chico ? ' chico' : ''}${envuelve ? ' envuelve' : ''}`}>
       {opciones.map((o) => (
         <button key={String(o.id)} type="button" className={valor === o.id ? 'chip activo' : 'chip'} onClick={() => onCambio(o.id)}>
           {o.label}
@@ -57,8 +84,8 @@ export function Campo({ label, children, ayuda }) {
   );
 }
 
-export function Vacio({ texto }) {
-  return <div className="vacio">{texto}</div>;
+export function Vacio({ texto, emoji = '🍕' }) {
+  return <div className="vacio"><span className="vacio-emoji">{emoji}</span>{texto}</div>;
 }
 
 export function Cargando() {
@@ -72,5 +99,34 @@ export function Barra({ valor, max, texto, sub }) {
       <div className="barra-txt"><span>{texto}</span><b>{sub}</b></div>
       <div className="barra"><div style={{ width: pct + '%' }} /></div>
     </div>
+  );
+}
+
+// Botón 📲 + instrucciones para instalar en el iPhone (solo si no está instalada)
+export function BotonInstalar() {
+  const [instalada, setInstalada] = useState(true);
+  const [ver, setVer] = useState(false);
+  useEffect(() => {
+    const st = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    setInstalada(!!st);
+  }, []);
+  if (instalada) return null;
+  return (
+    <>
+      <button className="ibtn" onClick={() => setVer(true)} aria-label="Instalar en el celular">📲</button>
+      <Hoja abierta={ver} titulo="Instalar en el iPhone" onCerrar={() => setVer(false)}
+        pie={<button className="btn primario bloque" onClick={() => setVer(false)}>Entendido</button>}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+          <img src="/apple-touch-icon.png" alt="" style={{ width: 84, height: 84, borderRadius: 20, boxShadow: 'var(--sombra-fuerte)' }} />
+        </div>
+        <ol className="pasos-instalar">
+          <li><div>Abrí esta página en <b>Safari</b>.</div></li>
+          <li><div>Tocá el botón <b>Compartir</b> (el cuadrado con la flecha ⬆️) abajo de todo.</div></li>
+          <li><div>Bajá y elegí <b>“Agregar a pantalla de inicio”</b>.</div></li>
+          <li><div>Tocá <b>Agregar</b>. Queda el logo de Tope de Pizza como una app más.</div></li>
+        </ol>
+        <div className="aviso azul" style={{ marginTop: 12 }}>Si ya la tenías agregada con el ícono viejo, borrala de la pantalla de inicio y agregala de nuevo.</div>
+      </Hoja>
+    </>
   );
 }

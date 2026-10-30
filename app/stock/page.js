@@ -2,8 +2,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
-import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio } from '@/components/ui';
-import { cant, num, money, fechaHora } from '@/lib/utils';
+import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio, Confirmar } from '@/components/ui';
+import { cant, num, money, fechaHora, linkWhatsapp } from '@/lib/utils';
 
 export default function Stock() {
   const { avisar } = useApp();
@@ -19,6 +19,7 @@ export default function Stock() {
   const [editIns, setEditIns] = useState(null);
   const [historial, setHistorial] = useState(null);
   const [trabajando, setTrabajando] = useState(false);
+  const [confirmar, setConfirmar] = useState(null);
 
   const cargar = useCallback(async () => {
     const [{ data: a }, { data: i }] = await Promise.all([
@@ -42,7 +43,7 @@ export default function Stock() {
     catch (e) { avisar(e.message, 'error'); cargar(); }
   }
 
-  async function confirmar() {
+  async function confirmarMov() {
     const v = num(valor);
     let delta = modo === 'ingreso' ? v : modo === 'consumo' ? -v : v - Number(sel.stock);
     if (!delta) { setSel(null); return; }
@@ -85,11 +86,21 @@ export default function Stock() {
     setEditIns(null);
     cargar();
   }
-  async function borrarInsumo() {
-    if (!confirm('¿Quitar este insumo de la lista?')) return;
-    await supabase.from('insumos').update({ activo: false }).eq('id', editIns.id);
-    setEditIns(null);
-    cargar();
+  function borrarInsumo(ins) {
+    setConfirmar({
+      titulo: `¿Eliminar ${ins.nombre}?`, mensaje: 'Se borra la materia prima y su historial de movimientos.', boton: 'Eliminar', peligro: true,
+      onOk: async () => {
+        const { error } = await supabase.from('insumos').delete().eq('id', ins.id);
+        if (error) {
+          const r = await supabase.from('insumos').update({ activo: false }).eq('id', ins.id);
+          if (r.error) return avisar(r.error.message, 'error');
+        }
+        avisar(`${ins.nombre} eliminada ✔`);
+        setEditIns(null);
+        setSel(null);
+        cargar();
+      },
+    });
   }
 
   async function verHistorial() {
@@ -110,7 +121,7 @@ export default function Stock() {
     if (!faltan.length && !cong.length) return avisar('No hay nada por debajo del mínimo 🙌');
     const t = ['🛒 *Lista de compras / producción*', ...faltan.map((i) => `• ${i.nombre}: hay ${cant(i.stock)} ${i.unidad} (mín. ${cant(i.minimo)})`),
       ...(cong.length ? ['', '🧊 *Congeladas a producir*', ...cong.map((a) => `• ${a.nombre}: hay ${cant(a.stock)} (mín. ${cant(a.stock_minimo)})`)] : [])].join('\n');
-    navigator.clipboard?.writeText(t).then(() => avisar('Lista copiada ✔ Pegala en WhatsApp'), () => alert(t));
+    window.location.href = linkWhatsapp('', t);
   }
 
   if (!insumos) return <><Cabecera titulo="Stock" /><Cargando /></>;
@@ -120,7 +131,7 @@ export default function Stock() {
 
   return (
     <>
-      <Cabecera titulo="Stock" derecha={<button className="btn borde chico" onClick={verHistorial}>Historial</button>} />
+      <Cabecera titulo="Stock" sub="Tocá un ítem para cargar, editar o eliminar" derecha={<button className="ibtn" onClick={verHistorial} aria-label="Historial">🕘</button>} />
       <Chips valor={tab} onCambio={setTab} opciones={[{ id: 'insumos', label: `🧀 Materias primas` }, { id: 'congeladas', label: `🧊 Congeladas` }]} />
 
       <div className="grid2" style={{ margin: '12px 0' }}>
@@ -157,15 +168,16 @@ export default function Stock() {
           })}
         </div>
       )}
-      {tab === 'insumos' && <button className="btn borde bloque" onClick={() => setEditIns({ nombre: '', unidad: 'kg', minimo: '', paso: '1', costo: '', stock: '' })}>+ Nueva materia prima</button>}
+      {tab === 'insumos' && <button className="btn amarillo bloque" onClick={() => setEditIns({ nombre: '', unidad: 'kg', minimo: '', paso: '1', costo: '', stock: '' })}>+ Nueva materia prima</button>}
       <p className="suave chico-t centro">Los − / + descuentan o suman de a una unidad (o el “paso” del insumo). Las congeladas se descuentan solas al venderlas.</p>
 
       {/* MOVIMIENTO */}
       <Hoja abierta={!!sel} titulo={sel?.nombre} onCerrar={() => setSel(null)}
         pie={
           <div className="fila-btns">
-            {sel?.tipo === 'ins' && <button className="btn borde" onClick={() => { setEditIns({ ...sel }); setSel(null); }}>Editar</button>}
-            <button className="btn primario" disabled={trabajando || valor === ''} onClick={confirmar}>Confirmar</button>
+            {sel?.tipo === 'ins' && <button className="btn peligro" onClick={() => borrarInsumo(sel)}>🗑 Eliminar</button>}
+            {sel?.tipo === 'ins' && <button className="btn borde" onClick={() => { setEditIns({ ...sel }); setSel(null); }}>✏️ Editar</button>}
+            <button className="btn primario" disabled={trabajando || valor === ''} onClick={confirmarMov}>Guardar</button>
           </div>
         }>
         {sel && (
@@ -206,7 +218,7 @@ export default function Stock() {
       <Hoja abierta={!!editIns} titulo={editIns?.id ? 'Editar materia prima' : 'Nueva materia prima'} onCerrar={() => setEditIns(null)}
         pie={
           <div className="fila-btns">
-            {editIns?.id && <button className="btn peligro" onClick={borrarInsumo}>Quitar</button>}
+            {editIns?.id && <button className="btn peligro" onClick={() => borrarInsumo(editIns)}>🗑 Eliminar</button>}
             <button className="btn primario" onClick={guardarInsumo}>Guardar</button>
           </div>
         }>
@@ -236,6 +248,7 @@ export default function Stock() {
           </div>
         )))}
       </Hoja>
+      <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
     </>
   );
 }

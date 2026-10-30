@@ -17,7 +17,7 @@ create table if not exists public.perfiles (
 
 create table if not exists public.config (
   id int primary key default 1 check (id = 1),
-  nombre_negocio text not null default 'Mi Pizzería',
+  nombre_negocio text not null default 'Tope de Pizza',
   telefono_negocio text,
   alias_pago text,                               -- alias / CBU / MP para pasar al cliente
   basico_cadete numeric not null default 15000,
@@ -223,7 +223,7 @@ begin
   values (
     new.id, new.email,
     coalesce(new.raw_user_meta_data->>'nombre', split_part(new.email, '@', 1)),
-    case when exists (select 1 from public.perfiles) then coalesce(new.raw_user_meta_data->>'rol', 'usuario') else 'admin' end
+    coalesce(new.raw_user_meta_data->>'rol', 'admin')
   )
   on conflict (id) do nothing;
   return new;

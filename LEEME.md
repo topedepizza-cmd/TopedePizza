@@ -1,4 +1,4 @@
-# 🍕 Pizzería App — Puesta en marcha (todo desde el navegador, gratis)
+# 🍕 Tope de Pizza — Puesta en marcha (todo desde el navegador, gratis)
 
 ## 1. Supabase (base de datos)
 1. supabase.com → **New project** (plan Free). Región: São Paulo.
@@ -34,3 +34,7 @@ Usuario de tu socia: **Más → Configuración → Usuarios → + Crear usuario*
 - Aunque eso fallara, al abrir la app después de las 3 AM se cierra igual automáticamente.
 - La caja nueva arranca sin movimientos pero con el saldo del día anterior.
 - El turno del cadete cerrado automático queda en **Cadete → Pendientes de pago**.
+
+## Actualización Tope de Pizza
+1. Supabase → SQL Editor → pegá `supabase/02_tope_de_pizza.sql` → Run (nombre, menú, usuarios admin).
+2. Cuando termines de probar: `supabase/03_borrar_pruebas.sql` deja comandas y caja en cero.

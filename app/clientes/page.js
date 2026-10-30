@@ -3,12 +3,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase, traerTodo } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
-import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio } from '@/components/ui';
+import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio, Confirmar } from '@/components/ui';
 import { money, fechaCorta, fechaHora, linkWhatsapp, cant } from '@/lib/utils';
 
 export default function Clientes() {
   const { avisar } = useApp();
   const router = useRouter();
+  const [confirmar, setConfirmar] = useState(null);
   const [clientes, setClientes] = useState(null);
   const [stats, setStats] = useState({});
   const [orden, setOrden] = useState('compras');
@@ -66,12 +67,17 @@ export default function Clientes() {
     setEdit(null);
     cargar();
   }
-  async function borrar() {
-    if (!confirm('¿Borrar este cliente? Sus comandas quedan igual.')) return;
-    const { error } = await supabase.from('clientes').delete().eq('id', edit.id);
-    if (error) return avisar(error.message, 'error');
-    setEdit(null);
-    cargar();
+  function borrar() {
+    setConfirmar({
+      titulo: `¿Borrar a ${edit.nombre}?`, mensaje: 'Sus comandas quedan igual.', boton: 'Borrar', peligro: true,
+      onOk: async () => {
+        const { error } = await supabase.from('clientes').delete().eq('id', edit.id);
+        if (error) return avisar(error.message, 'error');
+        avisar('Cliente borrado');
+        setEdit(null);
+        cargar();
+      },
+    });
   }
 
   if (!clientes) return <><Cabecera titulo="Clientes" /><Cargando /></>;
@@ -143,6 +149,7 @@ export default function Clientes() {
           </>
         )}
       </Hoja>
+      <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
     </>
   );
 }

@@ -2,11 +2,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
-import { Cabecera, Hoja, Campo, Cargando, Chips } from '@/components/ui';
+import { Cabecera, Hoja, Campo, Cargando, Chips, Confirmar } from '@/components/ui';
 import { money, num } from '@/lib/utils';
 
 export default function Config() {
   const { config, cargarConfig, avisar, esAdmin, session } = useApp();
+  const [confirmar, setConfirmar] = useState(null);
   const [f, setF] = useState(null);
   const [cadetes, setCadetes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
@@ -84,9 +85,13 @@ export default function Config() {
     } catch (e) { avisar(e.message, 'error'); }
     setTrabajando(false);
   }
-  async function borrarUsuario(u) {
-    if (!confirm(`¿Borrar el usuario ${u.email}?`)) return;
-    try { await llamarApi('DELETE', { id: u.id }); avisar('Usuario borrado'); cargar(); } catch (e) { avisar(e.message, 'error'); }
+  function borrarUsuario(u) {
+    setConfirmar({
+      titulo: `¿Borrar a ${u.nombre}?`, mensaje: `Ya no va a poder entrar con ${u.email}.`, boton: 'Borrar', peligro: true,
+      onOk: async () => {
+        try { await llamarApi('DELETE', { id: u.id }); avisar('Usuario borrado'); cargar(); } catch (e) { avisar(e.message, 'error'); }
+      },
+    });
   }
   async function cambiarRol(u, rol) {
     const { error } = await supabase.from('perfiles').update({ rol }).eq('id', u.id);
@@ -114,7 +119,7 @@ export default function Config() {
           <Campo label="Teléfono"><input inputMode="tel" value={f.telefono_negocio} onChange={(e) => setF({ ...f, telefono_negocio: e.target.value })} /></Campo>
           <Campo label="Alias / CBU para transferir"><input value={f.alias_pago} onChange={(e) => setF({ ...f, alias_pago: e.target.value })} /></Campo>
         </div>
-        <Campo label="Mensaje “tu pedido salió”" ayuda="Podés usar {cliente}, {numero} y {total}">
+        <Campo label="Mensaje “tu pedido salió”" ayuda="Podés usar {cliente}, {numero}, {total} y {alias}">
           <textarea value={f.mensaje_cliente} onChange={(e) => setF({ ...f, mensaje_cliente: e.target.value })} />
         </Campo>
       </div>
@@ -199,6 +204,7 @@ export default function Config() {
           </>
         )}
       </Hoja>
+      <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
     </>
   );
 }

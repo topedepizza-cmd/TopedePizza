@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
-import { Cabecera, Chips, Vacio, Cargando } from '@/components/ui';
+import { Chips, Vacio, Cargando, BotonInstalar } from '@/components/ui';
 import { money, cant, hora, hace, nombreCuenta, iconoCuenta, minutosDesde } from '@/lib/utils';
 
 const ENTREGA = {
@@ -14,7 +14,7 @@ const ENTREGA = {
 };
 
 export default function Comandas() {
-  const { avisar, config } = useApp();
+  const { avisar, perfil } = useApp();
   const router = useRouter();
   const [filtro, setFiltro] = useState('hoy');
   const [jornada, setJornada] = useState(null);
@@ -64,10 +64,17 @@ export default function Comandas() {
 
   return (
     <>
-      <Cabecera
-        titulo={config?.nombre_negocio || 'Comandas'}
-        sub={jornada ? `Jornada del ${new Date(jornada.fecha + 'T12:00').toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'short' })}` : ' '}
-      />
+      <div className="hero">
+        <img className="hero-logo" src="/logo-chico.png" alt="" />
+        <div className="hero-txt">
+          <img className="hero-marca" src="/marca.png" alt="Tope de Pizza" />
+          <div className="hero-sub">
+            {perfil?.nombre ? `Hola ${perfil.nombre} · ` : ''}
+            {jornada ? new Date(jornada.fecha + 'T12:00').toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'short' }) : ''}
+          </div>
+        </div>
+        <BotonInstalar />
+      </div>
 
       <div className="kpis">
         <div className="kpi destacado">
@@ -75,9 +82,9 @@ export default function Comandas() {
           <div className="k-valor">{money(vendido)}</div>
           <div className="k-sub">{validas.length} comandas</div>
         </div>
-        <div className="kpi" onClick={() => setFiltro('abiertas')}>
+        <div className="kpi amarillo" onClick={() => setFiltro('abiertas')}>
           <div className="k-label">Sin cobrar</div>
-          <div className="k-valor ambar-t">{money(sinCobrar)}</div>
+          <div className="k-valor">{money(sinCobrar)}</div>
           <div className="k-sub">{abiertas.length} abiertas{vueltos > 0 ? ` · vuelto afuera ${money(vueltos)}` : ''}</div>
         </div>
       </div>
@@ -96,7 +103,7 @@ export default function Comandas() {
       </div>
 
       {comandas === null ? <Cargando /> : lista.length === 0 ? (
-        <Vacio texto={filtro === 'abiertas' ? 'No hay comandas sin cobrar 🙌' : 'Todavía no hay comandas. Tocá “+ Nueva comanda”.'} />
+        <Vacio emoji={filtro === 'abiertas' ? '🙌' : '🍕'} texto={filtro === 'abiertas' ? 'No hay comandas sin cobrar' : filtro === 'anuladas' ? 'No hay comandas anuladas' : 'Todavía no hay comandas hoy. Tocá “+ Nueva comanda”.'} />
       ) : (
         lista.map((c) => {
           const e = ENTREGA[c.estado_entrega] || ENTREGA.preparando;
@@ -123,7 +130,7 @@ export default function Comandas() {
         })
       )}
 
-      <button className="fab" onClick={() => router.push('/comanda/nueva')}>+ Nueva comanda</button>
+      <button className="fab" onClick={() => router.push('/comanda/nueva')}><span style={{ fontSize: 20 }}>＋</span> Nueva comanda</button>
     </>
   );
 }

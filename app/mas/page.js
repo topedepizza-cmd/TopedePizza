@@ -26,6 +26,7 @@ export default function Mas() {
         ))}
       </div>
       <button className="btn peligro bloque" onClick={() => supabase.auth.signOut()}>Cerrar sesión</button>
+      <img src="/logo-chico.png" alt="Tope de Pizza" style={{ width: 110, margin: '26px auto 0', opacity: 0.9 }} />
       <p className="suave chico-t centro" style={{ marginTop: 18 }}>
         Tip: en Safari tocá Compartir → “Agregar a pantalla de inicio” para usarla como app.
       </p>

@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { limpiarUrl } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
 function admin() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error('Falta configurar SUPABASE_SERVICE_ROLE_KEY en Vercel');
+  const url = limpiarUrl(process.env.NEXT_PUBLIC_SUPABASE_URL);
+  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim().replace(/^['"`]+|['"`]+$/g, '');
+  if (!key) throw new Error('Falta configurar SUPABASE_SERVICE_ROLE_KEY en Vercel');
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
@@ -27,10 +28,10 @@ export async function POST(req) {
     const { email, password, nombre, rol } = await req.json();
     if (!email || !password || password.length < 6) throw new Error('Email y contraseña (mínimo 6 caracteres) obligatorios');
     const { data, error } = await sb.auth.admin.createUser({
-      email: email.trim(), password, email_confirm: true, user_metadata: { nombre: nombre || email.split('@')[0], rol: rol || 'usuario' },
+      email: email.trim(), password, email_confirm: true, user_metadata: { nombre: nombre || email.split('@')[0], rol: rol || 'admin' },
     });
     if (error) throw new Error(error.message);
-    await sb.from('perfiles').upsert({ id: data.user.id, email: data.user.email, nombre: nombre || email.split('@')[0], rol: rol || 'usuario' });
+    await sb.from('perfiles').upsert({ id: data.user.id, email: data.user.email, nombre: nombre || email.split('@')[0], rol: rol || 'admin' });
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 400 });

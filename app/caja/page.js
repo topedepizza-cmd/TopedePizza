@@ -99,7 +99,7 @@ export default function Caja() {
 
   const totalSaldo = Number(saldos.efectivo) + Number(saldos.transferencia) + Number(saldos.mercadopago);
   const suma = (filtro) => movs.filter(filtro).reduce((a, m) => a + Number(m.monto), 0);
-  const ventas = suma((m) => m.concepto === 'Venta');
+  const ventas = suma((m) => m.concepto === 'Venta') - suma((m) => ['Anulación venta', 'Cobro deshecho'].includes(m.concepto));
   const gastos = suma((m) => m.tipo === 'egreso' && !['Vuelto a cadete', 'Movimiento entre cuentas', 'Anulación venta', 'Cobro deshecho'].includes(m.concepto));
   const conceptos = (hoja === 'egreso' ? config?.conceptos_egreso : config?.conceptos_ingreso) || [];
 
@@ -110,12 +110,15 @@ export default function Caja() {
       <div className="lista">
         {CUENTAS.map((c) => (
           <div className="saldo-card" key={c.id}>
-            <div><div className="item-titulo">{c.icono} {c.nombre}</div><div className="item-sub">Inicial {money(j['si_' + c.id])}</div></div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span className="saldo-ico">{c.icono}</span>
+              <div><div className="item-titulo">{c.nombre}</div><div className="item-sub">Arrancó con {money(j['si_' + c.id])}</div></div>
+            </div>
             <div className={`saldo-valor mono ${Number(saldos[c.id]) < 0 ? 'rojo-t' : ''}`}>{money(saldos[c.id])}</div>
           </div>
         ))}
         <div className="saldo-card" style={{ background: 'var(--fondo)' }}>
-          <div className="item-titulo">Total</div>
+          <div className="item-titulo" style={{ fontSize: 16 }}>Total en caja</div>
           <div className="saldo-valor mono">{money(totalSaldo)}</div>
         </div>
       </div>

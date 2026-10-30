@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from './AppShell';
-import { Hoja, Chips } from './ui';
+import { Hoja, Chips, Confirmar } from './ui';
 import { money, cant, fechaHora, nombreCuenta, iconoCuenta, CUENTAS, textoComanda, linkWhatsapp, linkMapa } from '@/lib/utils';
 
 export default function VistaComanda({ comanda: c, items, cadete, recargar, recienCreada }) {
@@ -12,6 +12,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
   const [hojaCobro, setHojaCobro] = useState(false);
   const [forma, setForma] = useState(c.forma_pago);
   const [trabajando, setTrabajando] = useState(false);
+  const [confirmar, setConfirmar] = useState(null);
 
   const texto = textoComanda(c, items, { negocio: config?.nombre_negocio });
   const linkCadete = linkWhatsapp(cadete?.telefono || '', texto);
@@ -31,13 +32,15 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
     if (error) throw error;
   }, 'Estado actualizado');
   const cobrar = () => accion(async () => { await rpc('cobrar_comanda', { p_id: c.id, p_forma: forma }); setHojaCobro(false); }, 'Comanda cobrada ✔');
-  const reabrir = () => confirm('¿Deshacer el cobro? Se descuenta de la caja y la comanda vuelve a “sin cobrar”.') &&
-    accion(() => rpc('reabrir_comanda', { p_id: c.id }), 'Cobro deshecho');
-  const anular = () => {
-    const motivo = prompt('Motivo de la anulación (opcional):');
-    if (motivo === null) return;
-    accion(() => rpc('anular_comanda', { p_id: c.id, p_motivo: motivo }), 'Comanda anulada');
-  };
+  const reabrir = () => setConfirmar({
+    titulo: '¿Deshacer el cobro?', mensaje: 'Se descuenta de la caja y la comanda vuelve a “sin cobrar”.', boton: 'Deshacer cobro',
+    onOk: () => accion(() => rpc('reabrir_comanda', { p_id: c.id }), 'Cobro deshecho'),
+  });
+  const anular = () => setConfirmar({
+    titulo: `¿Anular comanda #${c.numero}?`, mensaje: 'Se devuelve el stock y, si estaba cobrada, se descuenta de la caja.', boton: 'Anular', peligro: true,
+    pedirTexto: 'Motivo (opcional)',
+    onOk: (motivo) => accion(() => rpc('anular_comanda', { p_id: c.id, p_motivo: motivo || null }), 'Comanda anulada'),
+  });
   async function copiar() {
     try { await navigator.clipboard.writeText(texto); avisar('Copiado ✔'); } catch { avisar('No se pudo copiar', 'error'); }
   }
@@ -47,9 +50,12 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
   return (
     <>
       <header className="cabecera">
-        <div>
-          <h1>Comanda #{c.numero}</h1>
-          <div className="sub">{fechaHora(c.created_at)}</div>
+        <div className="cab-izq">
+          <img className="cab-logo" src="/logo-chico.png" alt="" />
+          <div>
+            <h1>Comanda #{c.numero}</h1>
+            <div className="sub">{fechaHora(c.created_at)}</div>
+          </div>
         </div>
         <button className="btn borde chico" onClick={() => router.push('/')}>← Volver</button>
       </header>
@@ -59,13 +65,13 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
       {c.estado === 'anulada' && <div className="aviso rojo">Anulada{c.motivo_anulacion ? `: ${c.motivo_anulacion}` : ''}</div>}
 
       {recienCreada && c.tipo_entrega === 'delivery' && c.estado !== 'anulada' && (
-        <a className="btn verde bloque" style={{ marginBottom: 12, minHeight: 54, fontSize: 17 }} href={linkCadete} target="_blank" rel="noreferrer">
+        <a className="btn verde bloque grande" style={{ marginBottom: 12 }} href={linkCadete} target="_blank" rel="noreferrer">
           📲 Enviar al cadete por WhatsApp
         </a>
       )}
 
       <div className="tarjeta">
-        <h2>Cliente</h2>
+        <h2>👤 Cliente</h2>
         <div className="item-titulo" style={{ fontSize: 17 }}>{c.cliente_nombre || 'Sin nombre'}</div>
         {c.tipo_entrega === 'delivery' ? (
           c.cliente_direccion && <a className="item-sub" style={{ display: 'block', marginTop: 4 }} href={linkMapa(c.cliente_direccion)} target="_blank" rel="noreferrer">📍 {c.cliente_direccion}{c.cliente_referencia ? ` (${c.cliente_referencia})` : ''}</a>
@@ -75,7 +81,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
       </div>
 
       <div className="tarjeta">
-        <h2>Detalle</h2>
+        <h2>🧾 Detalle</h2>
         {items.map((i) => (
           <div key={i.id} className="resumen-linea"><span>{cant(i.cantidad)} × {i.descripcion}</span><span className="mono">{money(i.subtotal)}</span></div>
         ))}
@@ -89,7 +95,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
 
       {c.estado !== 'anulada' && c.tipo_entrega === 'delivery' && (
         <div className="tarjeta">
-          <h2>Estado de entrega</h2>
+          <h2>🛵 Estado de entrega</h2>
           <Chips valor={c.estado_entrega} onCambio={setEntrega}
             opciones={[{ id: 'preparando', label: '👨‍🍳 Preparando' }, { id: 'en_camino', label: '🛵 En camino' }, { id: 'entregada', label: '✅ Entregada' }]} />
         </div>
@@ -105,7 +111,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
 
       {c.estado === 'abierta' && (
         <>
-          <button className="btn primario bloque" style={{ minHeight: 54, fontSize: 17, marginBottom: 10 }} onClick={() => { setForma(c.forma_pago); setHojaCobro(true); }}>
+          <button className="btn primario bloque grande" style={{ marginBottom: 10 }} onClick={() => { setForma(c.forma_pago); setHojaCobro(true); }}>
             💰 Cobrar {c.forma_pago === 'efectivo' && c.tipo_entrega === 'delivery' ? '/ rendición cadete' : ''}
           </button>
           <div className="fila-btns">
@@ -120,7 +126,8 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
           <button className="btn peligro" disabled={trabajando} onClick={anular}>Anular</button>
         </div>
       )}
-      <button className="btn borde bloque" style={{ marginTop: 18 }} onClick={() => router.push('/comanda/nueva')}>+ Nueva comanda</button>
+      <button className="btn amarillo bloque grande" style={{ marginTop: 18 }} onClick={() => router.push('/comanda/nueva')}>＋ Nueva comanda</button>
+      <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
 
       <Hoja abierta={hojaCobro} titulo={`Cobrar #${c.numero}`} onCerrar={() => setHojaCobro(false)}
         pie={<button className="btn verde bloque" disabled={trabajando} onClick={cobrar}>Confirmar cobro de {money(c.total)}</button>}>

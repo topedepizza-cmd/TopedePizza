@@ -1,12 +1,17 @@
 {
-  "name": "Pizzería",
-  "short_name": "Pizzería",
+  "name": "Tope de Pizza",
+  "short_name": "Tope de Pizza",
+  "description": "Comandas, caja, cadete y stock de Tope de Pizza",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#f6f2ec",
-  "theme_color": "#c8341c",
+  "orientation": "portrait",
+  "background_color": "#fbf3ea",
+  "theme_color": "#fbf3ea",
+  "lang": "es-AR",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

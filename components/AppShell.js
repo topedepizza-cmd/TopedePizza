@@ -7,6 +7,8 @@ import { supabase } from '@/lib/supabase';
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
 
+export const NOMBRE = 'Tope de Pizza';
+
 const TABS = [
   { href: '/', label: 'Comandas', icono: '🧾' },
   { href: '/caja', label: 'Caja', icono: '💰' },
@@ -34,45 +36,52 @@ export default function AppShell({ children }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  const uid = session?.user?.id;
   useEffect(() => {
     if (session === undefined) return;
     if (!session && pathname !== '/login') router.replace('/login');
     if (session && pathname === '/login') router.replace('/');
-    if (session) {
-      supabase.from('perfiles').select('*').eq('id', session.user.id).maybeSingle().then(({ data }) => setPerfil(data));
-      cargarConfig();
-    }
-  }, [session, pathname, router, cargarConfig]);
+  }, [session, pathname, router]);
+
+  useEffect(() => {
+    if (!uid) return;
+    supabase.from('perfiles').select('*').eq('id', uid).maybeSingle().then(({ data }) => setPerfil(data));
+    cargarConfig();
+  }, [uid, cargarConfig]);
 
   const avisar = useCallback((texto, tipo = 'ok') => {
-    setToast({ texto, tipo });
-    setTimeout(() => setToast(null), tipo === 'error' ? 4500 : 2200);
+    setToast({ texto, tipo, id: Date.now() });
+    setTimeout(() => setToast((t) => (t && t.texto === texto ? null : t)), tipo === 'error' ? 4500 : 2300);
   }, []);
 
   if (pathname === '/login') {
     return <Ctx.Provider value={{ avisar }}>{children}{toast && <Toast t={toast} />}</Ctx.Provider>;
   }
-  if (!session) return <div className="cargando-full">🍕</div>;
+  if (!session) return <div className="cargando-full"><img src="/logo-chico.png" alt={NOMBRE} /></div>;
 
-  const activo = (href) => (href === '/' ? pathname === '/' || pathname.startsWith('/comanda') : pathname.startsWith(href) ||
+  const enComanda = pathname.startsWith('/comanda');
+  const activo = (href) => (href === '/' ? pathname === '/' || enComanda : pathname.startsWith(href) ||
     (href === '/mas' && ['/clientes', '/informes', '/codificacion', '/config'].some((p) => pathname.startsWith(p))));
+  const nombreNegocio = config?.nombre_negocio || NOMBRE;
 
   return (
-    <Ctx.Provider value={{ session, perfil, config, cargarConfig, avisar, esAdmin: perfil?.rol === 'admin' }}>
-      <main className="contenido">{children}</main>
-      <nav className="tabbar">
-        {TABS.map((t) => (
-          <Link key={t.href} href={t.href} className={activo(t.href) ? 'tab activo' : 'tab'}>
-            <span className="tab-icono">{t.icono}</span>
-            <span>{t.label}</span>
-          </Link>
-        ))}
-      </nav>
+    <Ctx.Provider value={{ session, perfil, config, cargarConfig, avisar, nombreNegocio, esAdmin: perfil?.rol === 'admin' }}>
+      <main className={enComanda ? 'contenido sin-tabs' : 'contenido'}>{children}</main>
+      {!enComanda && (
+        <nav className="tabbar">
+          {TABS.map((t) => (
+            <Link key={t.href} href={t.href} className={activo(t.href) ? 'tab activo' : 'tab'}>
+              <span className="tab-icono">{t.icono}</span>
+              <span>{t.label}</span>
+            </Link>
+          ))}
+        </nav>
+      )}
       {toast && <Toast t={toast} />}
     </Ctx.Provider>
   );
 }
 
 function Toast({ t }) {
-  return <div className={`toast ${t.tipo}`}>{t.texto}</div>;
+  return <div key={t.id} className={`toast ${t.tipo}`}>{t.texto}</div>;
 }

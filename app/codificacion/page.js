@@ -2,11 +2,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
-import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio } from '@/components/ui';
+import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio, Confirmar } from '@/components/ui';
 import { money, num, cant } from '@/lib/utils';
 
 export default function Codificacion() {
   const { avisar } = useApp();
+  const [confirmar, setConfirmar] = useState(null);
   const [tab, setTab] = useState('articulos');
   const [rubros, setRubros] = useState(null);
   const [subrubros, setSubrubros] = useState([]);
@@ -54,28 +55,37 @@ export default function Codificacion() {
     cargar();
   }
 
-  async function borrar() {
+  function borrar() {
     const tabla = edit.tipo === 'articulo' ? 'articulos' : edit.tipo === 'rubro' ? 'rubros' : 'subrubros';
-    if (!confirm('¿Borrar definitivamente? Si ya se usó en ventas, mejor desactivalo.')) return;
-    const { error } = await supabase.from(tabla).delete().eq('id', edit.id);
-    if (error) return avisar(error.message, 'error');
-    avisar('Borrado');
-    setEdit(null);
-    cargar();
+    setConfirmar({
+      titulo: `¿Borrar ${edit.nombre}?`, boton: 'Borrar', peligro: true,
+      mensaje: edit.tipo === 'articulo' ? 'Las ventas viejas quedan con su descripción. Si solo querés que no aparezca para vender, destildá “Activo”.' : 'Los artículos de este rubro/subrubro quedan sin asignar.',
+      onOk: async () => {
+        const { error } = await supabase.from(tabla).delete().eq('id', edit.id);
+        if (error) return avisar(error.message, 'error');
+        avisar('Borrado');
+        setEdit(null);
+        cargar();
+      },
+    });
   }
 
   function redondear(v, r) { return r > 0 ? Math.round(v / r) * r : Math.round(v); }
   const afectados = precios ? articulos.filter((a) => a.activo && (precios.rubro === 'todos' || a.rubro_id === precios.rubro)) : [];
-  async function aplicarPrecios() {
+  function aplicarPrecios() {
     const pct = num(precios.pct);
     if (!pct) return avisar('Poné un porcentaje', 'error');
-    if (!confirm(`¿Actualizar ${afectados.length} precios un ${pct}%?`)) return;
-    for (const a of afectados) {
-      await supabase.from('articulos').update({ precio: redondear(Number(a.precio) * (1 + pct / 100), precios.red) }).eq('id', a.id);
-    }
-    avisar('Precios actualizados ✔');
-    setPrecios(null);
-    cargar();
+    setConfirmar({
+      titulo: `¿Actualizar ${afectados.length} precios un ${pct}%?`, boton: 'Actualizar',
+      onOk: async () => {
+        for (const a of afectados) {
+          await supabase.from('articulos').update({ precio: redondear(Number(a.precio) * (1 + pct / 100), precios.red) }).eq('id', a.id);
+        }
+        avisar('Precios actualizados ✔');
+        setPrecios(null);
+        cargar();
+      },
+    });
   }
 
   if (!rubros) return <><Cabecera titulo="Codificación" /><Cargando /></>;
@@ -232,6 +242,7 @@ export default function Codificacion() {
           </>
         )}
       </Hoja>
+      <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
     </>
   );
 }
