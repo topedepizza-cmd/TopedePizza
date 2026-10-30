@@ -5,7 +5,7 @@ import { useApp } from '@/components/AppShell';
 
 export default function Login() {
   const { avisar } = useApp();
-  const [email, setEmail] = useState('');
+  const [usuario, setUsuario] = useState('');
   const [pass, setPass] = useState('');
   const [ver, setVer] = useState(false);
   const [cargando, setCargando] = useState(false);
@@ -13,9 +13,19 @@ export default function Login() {
   async function entrar(e) {
     e.preventDefault();
     setCargando(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password: pass });
+    try {
+      let email = usuario.trim().toLowerCase();
+      if (!email.includes('@')) {
+        const { data, error } = await supabase.rpc('email_login', { p_usuario: email });
+        if (error || !data) throw new Error('Usuario o contraseña incorrectos');
+        email = data;
+      }
+      const { error } = await supabase.auth.signInWithPassword({ email, password: pass });
+      if (error) throw new Error('Usuario o contraseña incorrectos');
+    } catch (err) {
+      avisar(err.message, 'error');
+    }
     setCargando(false);
-    if (error) avisar('Email o contraseña incorrectos', 'error');
   }
 
   return (
@@ -23,8 +33,8 @@ export default function Login() {
       <img className="login-logo" src="/logo.png" alt="Tope de Pizza" />
       <div className="tarjeta">
         <label className="campo">
-          <span className="campo-label">Email</span>
-          <input type="email" inputMode="email" autoCapitalize="none" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <span className="campo-label">Usuario</span>
+          <input autoCapitalize="none" autoCorrect="off" autoComplete="username" placeholder="Ej: facu" value={usuario} onChange={(e) => setUsuario(e.target.value)} required />
         </label>
         <label className="campo">
           <span className="campo-label">Contraseña</span>

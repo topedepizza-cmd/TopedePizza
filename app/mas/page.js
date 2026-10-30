@@ -5,6 +5,7 @@ import { useApp } from '@/components/AppShell';
 import { Cabecera } from '@/components/ui';
 
 const OPCIONES = [
+  { href: '/cuenta', icono: '👤', t: 'Mi cuenta', s: 'Mi usuario y contraseña' },
   { href: '/clientes', icono: '👥', t: 'Clientes', s: 'Agenda, historial y mejores clientes' },
   { href: '/informes', icono: '📊', t: 'Informes', s: 'Más vendidos, rubros, días, horarios, clientes' },
   { href: '/codificacion', icono: '🏷️', t: 'Codificación', s: 'Rubros, subrubros, artículos y precios' },
@@ -15,7 +16,7 @@ export default function Mas() {
   const { perfil } = useApp();
   return (
     <>
-      <Cabecera titulo="Más" sub={perfil ? `${perfil.nombre} · ${perfil.rol === 'admin' ? 'Administrador' : 'Usuario'}` : ''} />
+      <Cabecera titulo="Más" sub={perfil ? `${perfil.nombre} · usuario ${perfil.usuario || ''}` : ''} />
       <div className="lista menu-mas">
         {OPCIONES.map((o) => (
           <Link key={o.href} href={o.href} className="item clic">

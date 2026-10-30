@@ -3,7 +3,29 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio } from '@/components/ui';
-import { money, num, hora, fechaHora, CUENTAS, nombreCuenta, linkWhatsapp } from '@/lib/utils';
+import { money, num, hora, fechaHora, CUENTAS, nombreCuenta, linkWhatsapp, cadeteDelDia, DIAS_LARGO, diaSemanaOperativo } from '@/lib/utils';
+
+const SEL_VIAJE = 'id, numero, cliente_nombre, cliente_direccion, cliente_referencia, envio, total, forma_pago, created_at, cadete_id, estado';
+
+// mensaje de rendición para el cadete: cada viaje con cliente, dirección y envío
+function textoRendicion({ nombre, viajes, basico, extra, total, pagada, cuenta, fecha }) {
+  const l = [`🛵 *Rendición ${nombre}* — Tope de Pizza`, fecha ? `📅 ${fecha}` : '', ''];
+  viajes.forEach((v, i) => {
+    l.push(`${i + 1}. #${v.numero} ${v.cliente_nombre || 'Cliente'} — ${v.cliente_direccion || 'sin dirección'}`);
+    l.push(`    Envío: ${money(v.envio)}${v.forma_pago === 'efectivo' ? ` · cobraste ${money(v.total)} en efectivo` : ' · pagó por Mercado Pago'}`);
+  });
+  const efectivo = viajes.filter((v) => v.forma_pago === 'efectivo').reduce((a, v) => a + Number(v.total), 0);
+  const envios = viajes.reduce((a, v) => a + Number(v.envio), 0);
+  l.push('');
+  l.push(`🧾 Viajes: ${viajes.length} · Envíos: ${money(envios)}`);
+  l.push(`➕ Básico: ${money(basico)}`);
+  if (Number(extra)) l.push(`➕ Extra: ${money(extra)}`);
+  l.push(`💰 *Total a cobrar: ${money(total)}*`);
+  if (efectivo > 0) l.push(`💵 Efectivo cobrado a clientes: ${money(efectivo)}`);
+  l.push(pagada ? `✅ Pagado${cuenta ? ` (${nombreCuenta(cuenta)})` : ''}` : '⏳ Pendiente de pago');
+  l.push('¡Gracias! 🍕');
+  return l.filter((x, i) => !(x === '' && l[i - 1] === '')).join('\n');
+}
 
 export default function Cadete() {
   const { config, avisar } = useApp();
@@ -15,13 +37,14 @@ export default function Cadete() {
   const [form, setForm] = useState({});
   const [pagarLiq, setPagarLiq] = useState(null);
   const [trabajando, setTrabajando] = useState(false);
+  const [rendicion, setRendicion] = useState(null); // {nombre, tel, texto}
 
   const cargar = useCallback(async () => {
     try {
       await rpc('jornada_actual'); // dispara el cierre automático si corresponde
       const [{ data: c }, { data: v }, { data: l }] = await Promise.all([
-        supabase.from('cadetes').select('*').eq('activo', true).order('nombre'),
-        supabase.from('comandas').select('id, numero, cliente_nombre, cliente_direccion, envio, created_at, cadete_id, estado')
+        supabase.from('cadetes').select('*').order('nombre'),
+        supabase.from('comandas').select(SEL_VIAJE)
           .is('liquidacion_id', null).neq('estado', 'anulada').eq('tipo_entrega', 'delivery').not('cadete_id', 'is', null).order('id'),
         supabase.from('liquidaciones').select('*, cadetes(nombre, telefono)').order('id', { ascending: false }).limit(40),
       ]);
@@ -42,12 +65,19 @@ export default function Cadete() {
 
   async function liquidar(pagar) {
     setTrabajando(true);
+    const vs = viajes.filter((v) => v.cadete_id === hoja.cadete.id);
+    const total = vs.reduce((a, v) => a + Number(v.envio), 0) + num(form.basico) + num(form.extra);
+    const texto = textoRendicion({
+      nombre: hoja.cadete.nombre, viajes: vs, basico: num(form.basico), extra: num(form.extra), total, pagada: pagar, cuenta: form.cuenta,
+      fecha: new Date().toLocaleDateString('es-AR', { weekday: 'long', day: '2-digit', month: '2-digit' }).replace(/-/g, '/'),
+    });
     try {
       await rpc('liquidar_cadete', {
         p_cadete: hoja.cadete.id, p_tipo: 'manual', p_pagar: pagar, p_cuenta: form.cuenta,
         p_basico: num(form.basico), p_extra: num(form.extra), p_hasta: null,
       });
       avisar(pagar ? 'Turno cerrado y pagado ✔' : 'Turno cerrado (queda pendiente de pago)');
+      setRendicion({ nombre: hoja.cadete.nombre, tel: hoja.cadete.telefono, texto });
       setHoja(null);
       await cargar();
     } catch (e) { avisar(e.message, 'error'); }
@@ -65,8 +95,18 @@ export default function Cadete() {
     setTrabajando(false);
   }
 
-  function textoLiq(l, nombre) {
-    return `🛵 *Liquidación ${nombre}*\nViajes: ${l.viajes}\nEnvíos: ${money(l.total_envios)}\nBásico: ${money(l.basico)}${Number(l.extra) ? `\nExtra: ${money(l.extra)}` : ''}\n*Total: ${money(l.total)}*`;
+  async function verRendicion(l) {
+    const { data } = await supabase.from('comandas').select(SEL_VIAJE).eq('liquidacion_id', l.id).order('id');
+    setRendicion({
+      nombre: l.cadetes?.nombre || 'Cadete', tel: l.cadetes?.telefono,
+      texto: textoRendicion({
+        nombre: l.cadetes?.nombre || 'Cadete', viajes: data || [], basico: l.basico, extra: l.extra, total: l.total, pagada: l.pagada, cuenta: l.cuenta_pago,
+        fecha: new Date(l.hasta || l.created_at).toLocaleDateString('es-AR', { weekday: 'long', day: '2-digit', month: '2-digit' }).replace(/-/g, '/'),
+      }),
+    });
+  }
+  async function copiarRendicion() {
+    try { await navigator.clipboard.writeText(rendicion.texto); avisar('Copiado ✔'); } catch { avisar('No se pudo copiar', 'error'); }
   }
 
   if (!cadetes) return <><Cabecera titulo="Turno cadete" /><Cargando /></>;
@@ -78,9 +118,19 @@ export default function Cadete() {
     <>
       <Cabecera titulo="Turno cadete" sub={`Básico ${money(basicoDef)} + envíos de cada viaje`} />
 
-      {cadetes.length === 0 && <Vacio texto="No hay cadetes cargados. Agregalos en Más → Configuración." />}
+      {cadetes.length === 0 && <Vacio emoji="🛵" texto="No hay cadetes cargados. Agregalos en Más → Configuración." />}
+      {cadetes.length > 0 && !cadetes.some((c) => viajes.some((v) => v.cadete_id === c.id)) && (
+        <div className="tarjeta centro">
+          <div style={{ fontSize: 40 }}>🛵</div>
+          <div className="item-titulo" style={{ fontSize: 17, marginTop: 4 }}>No hay turno abierto</div>
+          <div className="suave" style={{ marginTop: 4 }}>
+            {cadeteDelDia(cadetes) ? <>Hoy {DIAS_LARGO[diaSemanaOperativo()]} le toca a <b>{cadeteDelDia(cadetes).nombre}</b>. </> : 'Hoy no hay cadete asignado. '}
+            El turno se abre solo con la primera comanda de delivery.
+          </div>
+        </div>
+      )}
 
-      {cadetes.map((c) => {
+      {cadetes.filter((c) => viajes.some((v) => v.cadete_id === c.id)).map((c) => {
         const vs = viajes.filter((v) => v.cadete_id === c.id);
         const envios = vs.reduce((a, v) => a + Number(v.envio), 0);
         return (
@@ -122,12 +172,12 @@ export default function Cadete() {
           <div className="seccion-titulo">Pendientes de pago</div>
           <div className="lista">
             {pendientesPago.map((l) => (
-              <div key={l.id} className="item clic" onClick={() => setPagarLiq({ ...l, cuenta: 'efectivo' })}>
-                <div className="item-cuerpo">
-                  <div className="item-titulo">{l.cadetes?.nombre || 'Cadete'} · {l.viajes} viajes</div>
-                  <div className="item-sub">{l.tipo_cierre === 'auto' ? 'Cierre automático' : 'Cierre manual'} · {fechaHora(l.created_at)}</div>
+              <div key={l.id} className="item">
+                <div className="item-cuerpo clic" onClick={() => setPagarLiq({ ...l, cuenta: 'efectivo' })}>
+                  <div className="item-titulo">{l.cadetes?.nombre || 'Cadete'} · {l.viajes} viajes · <span className="rojo-t">{money(l.total)}</span></div>
+                  <div className="item-sub">{l.tipo_cierre === 'auto' ? 'Cierre automático' : 'Cierre manual'} · {fechaHora(l.created_at)} · tocá para pagar</div>
                 </div>
-                <div className="item-der mono rojo-t">{money(l.total)}</div>
+                <button className="ibtn" onClick={() => verRendicion(l)} aria-label="Rendición">📲</button>
               </div>
             ))}
           </div>
@@ -140,10 +190,10 @@ export default function Cadete() {
           {pagadas.map((l) => (
             <div key={l.id} className="item">
               <div className="item-cuerpo">
-                <div className="item-titulo">{l.cadetes?.nombre || 'Cadete'} · {l.viajes} viajes</div>
+                <div className="item-titulo">{l.cadetes?.nombre || 'Cadete'} · {l.viajes} viajes · {money(l.total)}</div>
                 <div className="item-sub">{fechaHora(l.pagada_at)} · {nombreCuenta(l.cuenta_pago)} · envíos {money(l.total_envios)} + básico {money(l.basico)}</div>
               </div>
-              <div className="item-der mono">{money(l.total)}</div>
+              <button className="ibtn" onClick={() => verRendicion(l)} aria-label="Rendición">📲</button>
             </div>
           ))}
         </div>
@@ -170,12 +220,7 @@ export default function Cadete() {
               <div className="resumen-linea total"><span>Total a pagar</span><span className="mono">{money(total)}</span></div>
               <div className="campo-label" style={{ marginTop: 12 }}>Se paga desde</div>
               <Chips valor={form.cuenta} onCambio={(v) => setForm({ ...form, cuenta: v })} opciones={CUENTAS.map((x) => ({ id: x.id, label: `${x.icono} ${x.nombre}` }))} />
-              {hoja.cadete.telefono && (
-                <a className="btn borde chico bloque" style={{ marginTop: 12 }} target="_blank" rel="noreferrer"
-                  href={linkWhatsapp(hoja.cadete.telefono, textoLiq({ viajes: vs.length, total_envios: envios, basico: num(form.basico), extra: num(form.extra), total }, hoja.cadete.nombre))}>
-                  📲 Mandarle el resumen por WhatsApp
-                </a>
-              )}
+              <p className="suave chico-t">Al cerrar te aparece la rendición con cada viaje para mandársela por WhatsApp.</p>
             </>
           );
         })()}
@@ -192,6 +237,15 @@ export default function Cadete() {
             <Chips valor={pagarLiq.cuenta} onCambio={(v) => setPagarLiq({ ...pagarLiq, cuenta: v })} opciones={CUENTAS.map((x) => ({ id: x.id, label: `${x.icono} ${x.nombre}` }))} />
           </>
         )}
+      </Hoja>
+      <Hoja abierta={!!rendicion} titulo={`Rendición · ${rendicion?.nombre || ''}`} onCerrar={() => setRendicion(null)}
+        pie={rendicion && (
+          <div className="fila-btns">
+            <button className="btn borde" onClick={copiarRendicion}>📋 Copiar</button>
+            <a className="btn verde" href={linkWhatsapp(rendicion.tel || '', rendicion.texto)} target="_blank" rel="noreferrer">📲 Mandar a {rendicion.nombre}</a>
+          </div>
+        )}>
+        {rendicion && <pre className="previa-msj">{rendicion.texto}</pre>}
       </Hoja>
     </>
   );

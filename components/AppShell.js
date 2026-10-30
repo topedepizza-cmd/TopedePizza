@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { alertasStock } from '@/lib/utils';
 
 const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
@@ -24,6 +25,7 @@ export default function AppShell({ children }) {
   const [perfil, setPerfil] = useState(null);
   const [config, setConfig] = useState(null);
   const [toast, setToast] = useState(null);
+  const [alertas, setAlertas] = useState([]);
 
   const cargarConfig = useCallback(async () => {
     const { data } = await supabase.from('config').select('*').eq('id', 1).maybeSingle();
@@ -43,11 +45,23 @@ export default function AppShell({ children }) {
     if (session && pathname === '/login') router.replace('/');
   }, [session, pathname, router]);
 
+  const cargarPerfil = useCallback(async () => {
+    if (!uid) return;
+    const { data } = await supabase.from('perfiles').select('*').eq('id', uid).maybeSingle();
+    setPerfil(data);
+  }, [uid]);
+
   useEffect(() => {
     if (!uid) return;
-    supabase.from('perfiles').select('*').eq('id', uid).maybeSingle().then(({ data }) => setPerfil(data));
+    cargarPerfil();
     cargarConfig();
-  }, [uid, cargarConfig]);
+  }, [uid, cargarPerfil, cargarConfig]);
+
+  // alertas de stock: se refrescan al cambiar de pantalla
+  useEffect(() => {
+    if (!uid) return;
+    alertasStock(supabase).then(setAlertas).catch(() => {});
+  }, [uid, pathname]);
 
   const avisar = useCallback((texto, tipo = 'ok') => {
     setToast({ texto, tipo, id: Date.now() });
@@ -61,17 +75,20 @@ export default function AppShell({ children }) {
 
   const enComanda = pathname.startsWith('/comanda');
   const activo = (href) => (href === '/' ? pathname === '/' || enComanda : pathname.startsWith(href) ||
-    (href === '/mas' && ['/clientes', '/informes', '/codificacion', '/config'].some((p) => pathname.startsWith(p))));
+    (href === '/mas' && ['/clientes', '/informes', '/codificacion', '/config', '/cuenta'].some((p) => pathname.startsWith(p))));
   const nombreNegocio = config?.nombre_negocio || NOMBRE;
 
   return (
-    <Ctx.Provider value={{ session, perfil, config, cargarConfig, avisar, nombreNegocio, esAdmin: perfil?.rol === 'admin' }}>
+    <Ctx.Provider value={{ session, perfil, cargarPerfil, config, cargarConfig, avisar, nombreNegocio, alertas, esAdmin: perfil?.rol === 'admin' }}>
       <main className={enComanda ? 'contenido sin-tabs' : 'contenido'}>{children}</main>
       {!enComanda && (
         <nav className="tabbar">
           {TABS.map((t) => (
             <Link key={t.href} href={t.href} className={activo(t.href) ? 'tab activo' : 'tab'}>
               <span className="tab-icono">{t.icono}</span>
+              {t.href === '/stock' && alertas.length > 0 && (
+                <span className={`tab-alerta${alertas.some((a) => a.nivel === 'bajo') ? '' : ' cerca'}`}>{alertas.length}</span>
+              )}
               <span>{t.label}</span>
             </Link>
           ))}

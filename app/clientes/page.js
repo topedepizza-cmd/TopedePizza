@@ -98,7 +98,7 @@ export default function Clientes() {
             return (
               <div key={c.id} className="item clic" onClick={() => abrir(c)}>
                 <div className="item-cuerpo">
-                  <div className="item-titulo">{c.nombre}</div>
+                  <div className="item-titulo">{c.nombre} {s && s.n >= 5 && <span className="badge b-ambar">⭐ {s.n} pedidos</span>}</div>
                   <div className="item-sub">{[c.direccion, c.telefono].filter(Boolean).join(' · ') || '—'}</div>
                   {s && <div className="item-sub">{s.n} pedidos · último {fechaCorta(s.ultima)}</div>}
                 </div>

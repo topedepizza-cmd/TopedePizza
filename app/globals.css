@@ -77,7 +77,7 @@ textarea { resize: vertical; min-height: 70px; }
   background: rgba(255, 255, 255, 0.94); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--borde); border-radius: 22px; padding: 6px; box-shadow: var(--sombra-fuerte); max-width: 700px; margin: 0 auto;
 }
-.tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 11px; font-weight: 600; color: var(--suave); padding: 6px 0 5px; border-radius: 16px; }
+.tab { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 11px; font-weight: 600; color: var(--suave); padding: 6px 0 5px; border-radius: 16px; }
 .tab-icono { font-size: 21px; line-height: 1.1; filter: grayscale(1); opacity: 0.6; transition: transform 0.15s; }
 .tab.activo { color: var(--rojo); background: var(--rojo-suave); }
 .tab.activo .tab-icono { filter: none; opacity: 1; transform: scale(1.08); }
@@ -257,3 +257,23 @@ hr.sep { border: 0; border-top: 1px solid var(--borde); margin: 14px 0; }
 .pasos-instalar li { counter-increment: paso; display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--borde); }
 .pasos-instalar li:last-child { border-bottom: 0; }
 .pasos-instalar li::before { content: counter(paso); width: 28px; height: 28px; border-radius: 50%; background: var(--rojo); color: #fff; font-weight: 800; display: grid; place-items: center; flex: none; }
+
+/* pasos de mensajes */
+.pasos-msj { display: flex; flex-direction: column; gap: 8px; }
+.paso-msj { display: flex; align-items: center; gap: 12px; padding: 12px 13px; border-radius: 16px; background: #25d366; color: #fff; box-shadow: 0 4px 12px rgba(37, 211, 102, 0.28); }
+.paso-msj:active { transform: scale(0.98); }
+.paso-msj b { display: block; font-size: 15px; }
+.paso-msj small { display: block; font-size: 12.5px; opacity: 0.92; margin-top: 1px; }
+.paso-msj.hecho { background: var(--verde-suave); color: var(--verde); box-shadow: none; }
+.paso-n { width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,.25); display: grid; place-items: center; font-weight: 800; flex: none; }
+.paso-msj.hecho .paso-n { background: var(--verde); color: #fff; }
+
+.previa-msj { white-space: pre-wrap; font-family: inherit; font-size: 14px; line-height: 1.45; background: #e7f8dd; border-radius: 14px; padding: 12px 14px; margin: 0; border: 1px solid #cdeebd; }
+
+.tab-alerta { position: absolute; top: 2px; left: 50%; margin-left: 6px; background: var(--rojo); color: #fff; font-size: 11px; font-weight: 800; min-width: 18px; height: 18px; border-radius: 9px; display: grid; place-items: center; padding: 0 5px; box-shadow: 0 0 0 2px #fff; }
+.tab-alerta.cerca { background: var(--amarillo); color: var(--texto); }
+.alerta-stock { display: block; border-radius: 16px; padding: 12px 14px; margin-bottom: 14px; background: var(--rojo-suave); color: var(--rojo); border: 1px solid #f6c9c4; }
+.alerta-stock.cerca { background: var(--amarillo-suave); color: #8a5300; border-color: #ffe29a; }
+.alerta-stock b { display: block; font-size: 15px; margin-bottom: 2px; }
+.alerta-stock span { font-size: 13.5px; }
+.stock-cerca { color: var(--ambar); }

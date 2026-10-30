@@ -149,16 +149,26 @@ export default function Codificacion() {
         </div>
       ))}
 
-      {tab === 'subrubros' && (subrubros.length === 0 ? <Vacio texto="Sin subrubros" /> : (
-        <div className="lista">
-          {subrubros.map((s) => (
-            <div key={s.id} className="item clic" style={{ opacity: s.activo ? 1 : 0.45 }} onClick={() => setEdit({ tipo: 'subrubro', ...s })}>
-              <div className="item-cuerpo"><div className="item-titulo">{s.nombre}</div><div className="item-sub">{nomRubro(s.rubro_id)}</div></div>
-              <span className="suave">›</span>
+      {tab === 'subrubros' && rubros.map((r) => {
+        const subs = subrubros.filter((x) => x.rubro_id === r.id);
+        return (
+          <div key={r.id}>
+            <div className="seccion-titulo">{r.nombre} <span className="suave chico-t" style={{ fontFamily: 'inherit', fontWeight: 600 }}>· {subs.length} subrubros</span></div>
+            <div className="lista">
+              {subs.map((x) => (
+                <div key={x.id} className="item clic" style={{ opacity: x.activo ? 1 : 0.45 }} onClick={() => setEdit({ tipo: 'subrubro', ...x })}>
+                  <div className="item-cuerpo">
+                    <div className="item-titulo">{x.nombre}</div>
+                    <div className="item-sub">{articulos.filter((a) => a.subrubro_id === x.id).map((a) => a.nombre).join(', ') || 'sin artículos'}</div>
+                  </div>
+                  <span className="suave">›</span>
+                </div>
+              ))}
+              <div className="item clic item-accion" onClick={() => setEdit({ tipo: 'subrubro', nombre: '', rubro_id: r.id, orden: subs.length + 1, activo: true })}>+ Subrubro en {r.nombre}</div>
             </div>
-          ))}
-        </div>
-      ))}
+          </div>
+        );
+      })}
 
       {/* EDITAR */}
       <Hoja abierta={!!edit} titulo={edit?.id ? `Editar ${edit.tipo}` : `Nuevo ${edit?.tipo || ''}`} onCerrar={() => setEdit(null)}

@@ -3,9 +3,43 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio } from '@/components/ui';
-import { money, num, hora, fechaHora, CUENTAS, nombreCuenta, iconoCuenta } from '@/lib/utils';
+import { money, num, hora, fechaHora, CUENTAS, nombreCuenta, iconoCuenta, linkWhatsapp } from '@/lib/utils';
 
 const fechaLarga = (f) => new Date(f + 'T12:00').toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' });
+
+const INTERNOS_EGRESO = ['Vuelto a cadete', 'Movimiento entre cuentas', 'Anulación venta', 'Cobro deshecho'];
+const INTERNOS_INGRESO = ['Venta', 'Devolución vuelto cadete', 'Ajuste vuelto cadete', 'Movimiento entre cuentas'];
+
+// resumen del cierre para mandarle a la socia
+function textoCierre({ jornada, movs, comandas, finales }) {
+  const sum = (f) => movs.filter(f).reduce((a, m) => a + Number(m.monto), 0);
+  const ventaCuenta = (c) => sum((m) => m.cuenta === c && m.concepto === 'Venta') - sum((m) => m.cuenta === c && ['Anulación venta', 'Cobro deshecho'].includes(m.concepto));
+  const validas = comandas.filter((c) => c.estado !== 'anulada');
+  const abiertas = validas.filter((c) => c.estado === 'abierta');
+  const gastos = movs.filter((m) => m.tipo === 'egreso' && !INTERNOS_EGRESO.includes(m.concepto));
+  const extras = movs.filter((m) => m.tipo === 'ingreso' && !INTERNOS_INGRESO.includes(m.concepto));
+  const fecha = new Date(jornada.fecha + 'T12:00').toLocaleDateString('es-AR', { weekday: 'long', day: '2-digit', month: '2-digit' }).replace(/-/g, '/');
+  const l = [`🍕 *Cierre Tope de Pizza* — ${fecha}`, ''];
+  l.push(`🧾 Comandas: ${validas.length} · Vendido: *${money(validas.reduce((a, c) => a + Number(c.total), 0))}*`);
+  l.push(`💵 Cobrado en efectivo: ${money(ventaCuenta('efectivo'))}`);
+  l.push(`📱 Cobrado por Mercado Pago: ${money(ventaCuenta('mercadopago'))}`);
+  if (abiertas.length) l.push(`⏳ Sin cobrar: ${abiertas.length} (${money(abiertas.reduce((a, c) => a + Number(c.total), 0))})`);
+  const anuladas = comandas.length - validas.length;
+  if (anuladas) l.push(`❌ Anuladas: ${anuladas}`);
+  l.push('');
+  l.push(`💸 Gastos: ${money(gastos.reduce((a, m) => a + Number(m.monto), 0))}`);
+  gastos.forEach((m) => l.push(`   • ${m.concepto}${m.detalle ? ` (${m.detalle})` : ''}: ${money(m.monto)}`));
+  if (extras.length) {
+    l.push(`➕ Ingresos extra: ${money(extras.reduce((a, m) => a + Number(m.monto), 0))}`);
+    extras.forEach((m) => l.push(`   • ${m.concepto}${m.detalle ? ` (${m.detalle})` : ''}: ${money(m.monto)}`));
+  }
+  l.push('');
+  l.push('🏦 *Saldos al cierre*');
+  l.push(`   💵 Efectivo: ${money(finales.efectivo)}`);
+  l.push(`   📱 Mercado Pago: ${money(finales.mercadopago)}`);
+  l.push(`   *Total: ${money(Number(finales.efectivo) + Number(finales.mercadopago) + Number(finales.transferencia || 0))}*`);
+  return l.join('\n');
+}
 
 export default function Caja() {
   const { config, avisar } = useApp();
@@ -17,6 +51,7 @@ export default function Caja() {
   const [hoja, setHoja] = useState(null); // 'egreso' | 'ingreso' | 'mover' | 'cerrar'
   const [form, setForm] = useState({});
   const [verJornada, setVerJornada] = useState(null);
+  const [resumen, setResumen] = useState(null);
   const [movBorrar, setMovBorrar] = useState(null);
   const [trabajando, setTrabajando] = useState(false);
 
@@ -73,9 +108,11 @@ export default function Caja() {
           await rpc('registrar_movimiento', { p_tipo: dif > 0 ? 'ingreso' : 'egreso', p_cuenta: 'efectivo', p_monto: Math.abs(dif), p_concepto: 'Diferencia de arqueo', p_detalle: `Contado ${money(num(form.contado))}` });
         }
       }
+      const jCerrada = j;
       await rpc('cerrar_jornada', { p_tipo: 'manual' });
       avisar('Caja cerrada ✔ Arranca una jornada nueva con el saldo');
       setHoja(null);
+      await armarResumen(jCerrada, null);
       await cargar();
     } catch (e) { avisar(e.message, 'error'); }
     setTrabajando(false);
@@ -88,6 +125,20 @@ export default function Caja() {
       setMovBorrar(null);
       await cargar();
     } catch (e) { avisar(e.message, 'error'); }
+  }
+
+  // arma el resumen de una jornada (finales = saldos guardados al cierre)
+  async function armarResumen(jor, finales) {
+    const [{ data: m }, { data: cs }, sal] = await Promise.all([
+      supabase.from('movimientos').select('*').eq('jornada_id', jor.id).order('id'),
+      supabase.from('comandas').select('id, total, estado').eq('jornada_id', jor.id),
+      finales ? Promise.resolve(null) : rpc('saldos_jornada', { p_jornada: jor.id }),
+    ]);
+    const fin = finales || sal?.[0] || { efectivo: 0, mercadopago: 0, transferencia: 0 };
+    setResumen(textoCierre({ jornada: jor, movs: m || [], comandas: cs || [], finales: fin }));
+  }
+  async function copiarResumen() {
+    try { await navigator.clipboard.writeText(resumen); avisar('Copiado ✔'); } catch { avisar('No se pudo copiar', 'error'); }
   }
 
   async function abrirHistorial(h) {
@@ -144,7 +195,8 @@ export default function Caja() {
         <button className="btn borde" onClick={() => abrir('mover')}>⇄ Mover entre cuentas</button>
         <button className="btn primario" onClick={() => { setForm({ contado: '' }); setHoja('cerrar'); }}>🔒 Cerrar caja</button>
       </div>
-      <p className="suave chico-t centro">Si no cerrás, se cierra sola a las 3:00 AM y arranca en 0 con el saldo de hoy.</p>
+      <button className="btn borde bloque" style={{ marginTop: 8 }} onClick={() => armarResumen(j, null)}>📲 Resumen de hoy para mi socia</button>
+      <p className="suave chico-t centro">Si no cerrás, se cierra sola a las 3:00 AM y arranca en 0 con el saldo de hoy. Los cierres anteriores también se pueden mandar desde abajo.</p>
 
       <div className="seccion-titulo">Movimientos de hoy</div>
       {movs.length === 0 ? <Vacio texto="Sin movimientos todavía" /> : (
@@ -224,7 +276,12 @@ export default function Caja() {
       </Hoja>
 
       {/* HISTORIAL */}
-      <Hoja abierta={!!verJornada} titulo={verJornada ? `Jornada ${fechaLarga(verJornada.fecha)}` : ''} onCerrar={() => setVerJornada(null)}>
+      <Hoja abierta={!!verJornada} titulo={verJornada ? `Jornada ${fechaLarga(verJornada.fecha)}` : ''} onCerrar={() => setVerJornada(null)}
+        pie={verJornada && (
+          <button className="btn verde bloque" onClick={() => { const h = verJornada; setVerJornada(null); armarResumen(h, { efectivo: h.sf_efectivo, mercadopago: h.sf_mercadopago, transferencia: h.sf_transferencia }); }}>
+            📲 Resumen para mandar a mi socia
+          </button>
+        )}>
         {verJornada && (
           <>
             {CUENTAS.map((c) => (
@@ -239,6 +296,17 @@ export default function Caja() {
             ))}
           </>
         )}
+      </Hoja>
+      {/* RESUMEN PARA LA SOCIA */}
+      <Hoja abierta={!!resumen} titulo="Resumen del cierre" onCerrar={() => setResumen(null)}
+        pie={resumen && (
+          <div className="fila-btns">
+            <button className="btn borde" onClick={copiarResumen}>📋 Copiar</button>
+            <a className="btn verde" href={linkWhatsapp(config?.tel_socia || '', resumen)} target="_blank" rel="noreferrer">📲 Mandar a mi socia</a>
+          </div>
+        )}>
+        {!config?.tel_socia && <div className="aviso">Cargá el WhatsApp de tu socia en Más → Configuración para mandárselo directo.</div>}
+        {resumen && <pre className="previa-msj">{resumen}</pre>}
       </Hoja>
     </>
   );

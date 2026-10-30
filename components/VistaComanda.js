@@ -1,10 +1,10 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from './AppShell';
 import { Hoja, Chips, Confirmar } from './ui';
-import { money, cant, fechaHora, nombreCuenta, iconoCuenta, CUENTAS, textoComanda, linkWhatsapp, linkMapa } from '@/lib/utils';
+import { money, cant, fechaHora, nombreCuenta, iconoCuenta, CUENTAS, textoComanda, linkWhatsapp, linkMapa, armarMensaje } from '@/lib/utils';
 
 export default function VistaComanda({ comanda: c, items, cadete, recargar, recienCreada }) {
   const { config, avisar } = useApp();
@@ -13,14 +13,58 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
   const [forma, setForma] = useState(c.forma_pago);
   const [trabajando, setTrabajando] = useState(false);
   const [confirmar, setConfirmar] = useState(null);
+  const [enviados, setEnviados] = useState({});
+  const [linkMp, setLinkMp] = useState(null);
+  const [errorMp, setErrorMp] = useState(null);
+  const [nroPedido, setNroPedido] = useState(null);
+
+  // cliente frecuente: número de pedido de este cliente
+  useEffect(() => {
+    if (!c.cliente_id) return;
+    supabase.from('comandas').select('id', { count: 'exact', head: true })
+      .eq('cliente_id', c.cliente_id).neq('estado', 'anulada').lte('id', c.id)
+      .then(({ count }) => setNroPedido(count || null));
+  }, [c.cliente_id, c.id]);
+
+  // link de pago de Mercado Pago (si está activado en Configuración)
+  useEffect(() => {
+    if (!config?.mp_link_auto || c.estado === 'anulada' || c.estado === 'cobrada') return;
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const r = await fetch('/api/mp-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session?.access_token}` },
+          body: JSON.stringify({ comanda_id: c.id }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        setLinkMp(j.link);
+      } catch (e) { setErrorMp(e.message); }
+    })();
+  }, [config?.mp_link_auto, c.id, c.total, c.estado]);
 
   const texto = textoComanda(c, items, { negocio: config?.nombre_negocio });
   const linkCadete = linkWhatsapp(cadete?.telefono || '', texto);
-  const msjCliente = (config?.mensaje_cliente || '')
-    .replace('{cliente}', c.cliente_nombre || '')
-    .replace('{numero}', c.numero)
-    .replace('{total}', money(c.total))
-    .replace('{alias}', config?.alias_pago || '');
+  const detalle = [
+    ...items.map((i) => `• ${cant(i.cantidad)} ${i.descripcion} — ${money(i.subtotal)}`),
+    ...(Number(c.envio) > 0 ? [`• Envío — ${money(c.envio)}`] : []),
+    ...(Number(c.descuento) > 0 ? [`• Descuento — -${money(c.descuento)}`] : []),
+  ].join('\n');
+  const datosMsj = {
+    cliente: (c.cliente_nombre || '').split(' ')[0], numero: c.numero, total: money(c.total), detalle,
+    alias: config?.alias_pago || '', titular: config?.titular_pago || '', link_mp: linkMp || '',
+  };
+  const msjConfirmacion = armarMensaje(config?.mensaje_confirmacion || '¡Hola {cliente}! Recibimos tu pedido:\n\n{detalle}\n💰 Total: {total}\n\n🛵 Te avisamos cuando salga.', datosMsj);
+  const msjSalio = armarMensaje(config?.mensaje_cliente || '¡Hola {cliente}! Tu pedido ya salió 🛵', datosMsj);
+  const telCliente = c.cliente_telefono;
+
+  async function marcarEnCamino() {
+    if (c.estado_entrega !== 'en_camino' && c.estado_entrega !== 'entregada') {
+      await supabase.from('comandas').update({ estado_entrega: 'en_camino' }).eq('id', c.id);
+      recargar();
+    }
+  }
 
   async function accion(fn, okMsg) {
     setTrabajando(true);
@@ -64,15 +108,50 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
       {c.estado === 'cobrada' && <div className="aviso verde">✔ Cobrada por {nombreCuenta(c.forma_pago)} · {fechaHora(c.cobrada_at)}</div>}
       {c.estado === 'anulada' && <div className="aviso rojo">Anulada{c.motivo_anulacion ? `: ${c.motivo_anulacion}` : ''}</div>}
 
-      {recienCreada && c.tipo_entrega === 'delivery' && c.estado !== 'anulada' && (
-        <a className="btn verde bloque grande" style={{ marginBottom: 12 }} href={linkCadete} target="_blank" rel="noreferrer">
-          📲 Enviar al cadete por WhatsApp
-        </a>
+      {c.estado !== 'anulada' && (
+        <div className="tarjeta">
+          <h2>💬 Mensajes</h2>
+          {!telCliente && <div className="aviso" style={{ marginBottom: 10 }}>Este cliente no tiene teléfono: cargalo con ✏️ Editar para poder escribirle.</div>}
+          <div className="pasos-msj">
+            {telCliente && (
+              <a className={`paso-msj${enviados.conf ? ' hecho' : ''}`} href={linkWhatsapp(telCliente, msjConfirmacion)} target="_blank" rel="noreferrer"
+                onClick={() => setEnviados({ ...enviados, conf: true })}>
+                <span className="paso-n">{enviados.conf ? '✔' : '1'}</span>
+                <span><b>Confirmar pedido al cliente</b><small>Detalle, total{linkMp ? ', link de pago de Mercado Pago' : ''} y alias</small></span>
+              </a>
+            )}
+            {c.tipo_entrega === 'delivery' && (
+              <a className={`paso-msj${enviados.cad ? ' hecho' : ''}`} href={linkCadete} target="_blank" rel="noreferrer"
+                onClick={() => setEnviados({ ...enviados, cad: true })}>
+                <span className="paso-n">{enviados.cad ? '✔' : telCliente ? '2' : '1'}</span>
+                <span><b>Pasar comanda al cadete {cadete?.nombre ? `(${cadete.nombre})` : ''}</b><small>Para que la tenga antes de salir: dirección con Google Maps y cuánto cobrar</small></span>
+              </a>
+            )}
+            {telCliente && (
+              <a className={`paso-msj${enviados.salio || c.estado_entrega !== 'preparando' ? ' hecho' : ''}`} href={linkWhatsapp(telCliente, msjSalio)} target="_blank" rel="noreferrer"
+                onClick={() => { setEnviados({ ...enviados, salio: true }); marcarEnCamino(); }}>
+                <span className="paso-n">{enviados.salio || c.estado_entrega !== 'preparando' ? '✔' : '3'}</span>
+                <span><b>{c.tipo_entrega === 'delivery' ? '🛵 Salió: avisar al cliente' : 'Avisar que está listo para retirar'}</b><small>{c.tipo_entrega === 'delivery' ? 'Tocalo cuando el cadete sale. La comanda pasa a “En camino”.' : 'Le llega que ya puede pasar a buscarlo'}</small></span>
+              </a>
+            )}
+            {!telCliente && c.tipo_entrega === 'delivery' && c.estado_entrega === 'preparando' && (
+              <button className="btn borde bloque" onClick={marcarEnCamino}>🛵 Salió el pedido</button>
+            )}
+          </div>
+          {errorMp && <div className="chico-t suave" style={{ marginTop: 8 }}>Link de Mercado Pago: {errorMp}</div>}
+        </div>
       )}
 
       <div className="tarjeta">
         <h2>👤 Cliente</h2>
         <div className="item-titulo" style={{ fontSize: 17 }}>{c.cliente_nombre || 'Sin nombre'}</div>
+        {nroPedido > 1 && (
+          <div style={{ margin: '6px 0' }}>
+            <span className={`badge ${nroPedido % (config?.premio_cada || 10) === 0 ? 'b-rojo' : 'b-ambar'}`}>
+              ⭐ Cliente frecuente · pedido N° {nroPedido}{nroPedido % (config?.premio_cada || 10) === 0 ? ' 🎁 ¡le toca regalito!' : ''}
+            </span>
+          </div>
+        )}
         {c.tipo_entrega === 'delivery' ? (
           c.cliente_direccion && <a className="item-sub" style={{ display: 'block', marginTop: 4 }} href={linkMapa(c.cliente_direccion)} target="_blank" rel="noreferrer">📍 {c.cliente_direccion}{c.cliente_referencia ? ` (${c.cliente_referencia})` : ''}</a>
         ) : <div className="item-sub">🏠 Retira en el local</div>}
@@ -102,11 +181,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
       )}
 
       {c.estado !== 'anulada' && (
-        <div className="fila-btns" style={{ marginBottom: 10 }}>
-          {c.tipo_entrega === 'delivery' && !recienCreada && <a className="btn verde" href={linkCadete} target="_blank" rel="noreferrer">📲 Al cadete</a>}
-          <button className="btn borde" onClick={copiar}>📋 Copiar</button>
-          {c.cliente_telefono && <a className="btn borde" href={linkWhatsapp(c.cliente_telefono, msjCliente)} target="_blank" rel="noreferrer">💬 Avisar cliente</a>}
-        </div>
+        <button className="btn borde bloque" style={{ marginBottom: 10 }} onClick={copiar}>📋 Copiar comanda</button>
       )}
 
       {c.estado === 'abierta' && (

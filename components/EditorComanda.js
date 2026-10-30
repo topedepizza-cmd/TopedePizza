@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from './AppShell';
 import { Hoja, Chips, Campo, Cargando, Confirmar } from './ui';
-import { money, num, cant, CUENTAS } from '@/lib/utils';
+import { money, num, cant, CUENTAS, normalizar, cadeteDelDia, DIAS_LARGO, diaSemanaOperativo } from '@/lib/utils';
 import { interpretarPedido } from '@/lib/voz';
 
 let claveSeq = 1;
@@ -37,7 +37,9 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
   });
   const [guardarCliente, setGuardarCliente] = useState(true);
   const [sugerencias, setSugerencias] = useState([]);
+  const [todosClientes, setTodosClientes] = useState([]);
   const [ultimoPedido, setUltimoPedido] = useState(null);
+  const [cantPedidos, setCantPedidos] = useState(0);
 
   const [items, setItems] = useState(() => (itemsIniciales || []).map((i) => ({ ...i, key: nuevaClave(), cantidad: Number(i.cantidad), precio_unit: Number(i.precio_unit) })));
   const [tipoEntrega, setTipoEntrega] = useState(comanda?.tipo_entrega || 'delivery');
@@ -66,15 +68,17 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
 
   useEffect(() => {
     (async () => {
-      const [{ data: a }, { data: r }, { data: c }] = await Promise.all([
+      const [{ data: a }, { data: r }, { data: c }, { data: cls }] = await Promise.all([
         supabase.from('articulos').select('*').eq('activo', true).order('orden').order('nombre'),
         supabase.from('rubros').select('*').eq('activo', true).order('orden'),
         supabase.from('cadetes').select('*').eq('activo', true).order('nombre'),
+        supabase.from('clientes').select('*').order('nombre').limit(5000),
       ]);
       setArticulos(a || []);
       setRubros(r || []);
       setCadetes(c || []);
-      if (!comanda && c?.length) setCadeteId(c[0].id);
+      setTodosClientes((cls || []).map((x) => ({ ...x, _txt: normalizar(`${x.nombre} ${x.telefono || ''} ${String(x.telefono || '').replace(/\D/g, '')} ${x.direccion || ''}`) })));
+      if (!comanda && c?.length) setCadeteId((cadeteDelDia(c) || c[0]).id);
       if (!comanda && clienteId) {
         const { data: cl } = await supabase.from('clientes').select('*').eq('id', clienteId).maybeSingle();
         if (cl) elegirCliente(cl);
@@ -91,15 +95,18 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
   }, [config, envio, comanda]);
 
   // ---- clientes
-  async function buscarCliente(texto) {
+  // autocompletar: busca entre todos los clientes guardados mientras escribís
+  function buscarCliente(texto) {
     setCliente((c) => ({ ...c, nombre: texto, id: null }));
     setUltimoPedido(null);
-    const t = texto.trim();
-    if (t.length < 2) { setSugerencias([]); return; }
-    const like = `%${t.replace(/[%,]/g, '')}%`;
-    const { data } = await supabase.from('clientes').select('*')
-      .or(`nombre.ilike.${like},telefono.ilike.${like},direccion.ilike.${like}`).order('nombre').limit(6);
-    setSugerencias(data || []);
+    const t = normalizar(texto);
+    if (!t) { setSugerencias([]); return; }
+    const palabras = t.split(' ');
+    const lista = todosClientes
+      .filter((x) => palabras.every((p) => x._txt.includes(p)))
+      .sort((x, y) => (normalizar(y.nombre).startsWith(t) ? 1 : 0) - (normalizar(x.nombre).startsWith(t) ? 1 : 0))
+      .slice(0, 6);
+    setSugerencias(lista);
   }
   async function elegirCliente(c) {
     setCliente({ id: c.id, nombre: c.nombre || '', telefono: c.telefono || '', direccion: c.direccion || '', referencia: c.referencia || '' });
@@ -107,6 +114,8 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
     const { data } = await supabase.from('comandas').select('id, created_at, total, comanda_items(*)')
       .eq('cliente_id', c.id).neq('estado', 'anulada').order('id', { ascending: false }).limit(1);
     setUltimoPedido(data?.[0] || null);
+    const { count } = await supabase.from('comandas').select('id', { count: 'exact', head: true }).eq('cliente_id', c.id).neq('estado', 'anulada');
+    setCantPedidos(count || 0);
   }
   function repetirUltimo() {
     if (!ultimoPedido || !articulos) return;
@@ -261,15 +270,26 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
               {sugerencias.map((s) => (
                 <div key={s.id} className="item clic" onClick={() => elegirCliente(s)}>
                   <div className="item-cuerpo">
-                    <div className="item-titulo">{s.nombre}</div>
-                    <div className="item-sub">{[s.direccion, s.telefono].filter(Boolean).join(' · ')}</div>
+                    <div className="item-titulo">👤 {s.nombre}</div>
+                    <div className="item-sub">{[s.direccion, s.telefono].filter(Boolean).join(' · ') || 'sin datos'}</div>
                   </div>
+                  <span className="badge b-verde">Elegir</span>
                 </div>
               ))}
             </div>
           )}
         </div>
-        {cliente.id && <div className="chico-t verde-t" style={{ margin: '6px 2px' }}>✔ Cliente guardado</div>}
+        {cliente.id && (() => {
+          const n = (editando ? cantPedidos : cantPedidos + 1);
+          const cada = Number(config?.premio_cada) || 10;
+          return (
+            <div style={{ margin: '8px 2px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <span className="badge b-verde">✔ Cliente guardado</span>
+              {n > 1 && <span className="badge b-ambar">⭐ Pedido N° {n}</span>}
+              {n > 1 && n % cada === 0 && <span className="badge b-rojo">🎁 ¡Pedido N° {n}! Regalale algo</span>}
+            </div>
+          );
+        })()}
         {ultimoPedido && (
           <button className="btn azul chico bloque" style={{ margin: '6px 0' }} onClick={repetirUltimo}>
             🔁 Repetir último pedido ({ultimoPedido.comanda_items.map((i) => `${cant(i.cantidad)} ${i.descripcion}`).join(', ')})
@@ -354,7 +374,9 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
             {envioOtro && <input style={{ marginTop: 8 }} inputMode="numeric" placeholder="Monto del envío" value={envio || ''} onChange={(e) => setEnvio(num(e.target.value))} autoFocus />}
             {cadetes.length > 0 && (
               <>
-                <div className="campo-label" style={{ marginTop: 12 }}>Cadete</div>
+                <div className="campo-label" style={{ marginTop: 12 }}>
+                  Cadete {cadeteDelDia(cadetes) ? `· hoy ${DIAS_LARGO[diaSemanaOperativo()]} le toca a ${cadeteDelDia(cadetes).nombre}` : ''}
+                </div>
                 <Chips valor={cadeteId} onCambio={setCadeteId} opciones={cadetes.map((c) => ({ id: c.id, label: c.nombre }))} />
               </>
             )}

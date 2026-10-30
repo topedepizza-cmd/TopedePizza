@@ -3,7 +3,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio, Confirmar } from '@/components/ui';
-import { cant, num, money, fechaHora, linkWhatsapp } from '@/lib/utils';
+import { cant, num, money, fechaHora, linkWhatsapp, nivelStock } from '@/lib/utils';
+
+// cuánto comprar/producir: llegar al doble del mínimo
+function sugerido(stock, minimo, paso) {
+  const p = Number(paso) || 1;
+  const falta = Number(minimo) * 2 - Number(stock);
+  return Math.max(Math.ceil(falta / p) * p, p);
+}
 
 export default function Stock() {
   const { avisar } = useApp();
@@ -18,6 +25,8 @@ export default function Stock() {
   const [prod, setProd] = useState({});
   const [editIns, setEditIns] = useState(null);
   const [historial, setHistorial] = useState(null);
+  const [compras, setCompras] = useState(null);
+  const [minimoTxt, setMinimoTxt] = useState('');
   const [trabajando, setTrabajando] = useState(false);
   const [confirmar, setConfirmar] = useState(null);
 
@@ -41,6 +50,17 @@ export default function Stock() {
     setter((l) => l.map((x) => (x.id === item.id ? { ...x, stock: Number(x.stock) + delta } : x)));
     try { await mover(tipo, item, delta, delta > 0 ? 'Ingreso rápido' : 'Baja rápida'); }
     catch (e) { avisar(e.message, 'error'); cargar(); }
+  }
+
+  async function guardarMinimo() {
+    const v = num(minimoTxt);
+    const { error } = sel.tipo === 'art'
+      ? await supabase.from('articulos').update({ stock_minimo: v }).eq('id', sel.id)
+      : await supabase.from('insumos').update({ minimo: v }).eq('id', sel.id);
+    if (error) return avisar(error.message, 'error');
+    avisar(`Mínimo de ${sel.nombre}: ${cant(v)} ✔`);
+    setSel({ ...sel, minimo: v, stock_minimo: v });
+    cargar();
   }
 
   async function confirmarMov() {
@@ -116,18 +136,20 @@ export default function Stock() {
   }
 
   function listaCompras() {
-    const faltan = (insumos || []).filter((i) => Number(i.stock) <= Number(i.minimo));
-    const cong = (congeladas || []).filter((a) => Number(a.stock) <= Number(a.stock_minimo));
-    if (!faltan.length && !cong.length) return avisar('No hay nada por debajo del mínimo 🙌');
-    const t = ['🛒 *Lista de compras / producción*', ...faltan.map((i) => `• ${i.nombre}: hay ${cant(i.stock)} ${i.unidad} (mín. ${cant(i.minimo)})`),
-      ...(cong.length ? ['', '🧊 *Congeladas a producir*', ...cong.map((a) => `• ${a.nombre}: hay ${cant(a.stock)} (mín. ${cant(a.stock_minimo)})`)] : [])].join('\n');
-    window.location.href = linkWhatsapp('', t);
+    const faltan = (insumos || []).filter((i) => nivelStock(i.stock, i.minimo) !== 'ok');
+    const cong = (congeladas || []).filter((a) => nivelStock(a.stock, a.stock_minimo) !== 'ok');
+    const t = ['🛒 *Lista de compras — Tope de Pizza*', ...faltan.map((i) => `• ${i.nombre}: comprar ${cant(sugerido(i.stock, i.minimo, i.paso))} ${i.unidad} (hay ${cant(i.stock)})`),
+      ...(cong.length ? ['', '🧊 *Congeladas a producir*', ...cong.map((a) => `• ${a.nombre}: hacer ${cant(sugerido(a.stock, a.stock_minimo, 1))} (hay ${cant(a.stock)})`)] : [])].join('\n');
+    setCompras({ faltan, cong, texto: t });
+  }
+  async function copiarCompras() {
+    try { await navigator.clipboard.writeText(compras.texto); avisar('Lista copiada ✔'); } catch { avisar('No se pudo copiar', 'error'); }
   }
 
   if (!insumos) return <><Cabecera titulo="Stock" /><Cargando /></>;
 
   const lista = tab === 'insumos' ? insumos : congeladas;
-  const bajos = insumos.filter((i) => Number(i.stock) <= Number(i.minimo)).length + congeladas.filter((a) => Number(a.stock) <= Number(a.stock_minimo)).length;
+  const bajos = insumos.filter((i) => nivelStock(i.stock, i.minimo) !== 'ok').length + congeladas.filter((a) => nivelStock(a.stock, a.stock_minimo) !== 'ok').length;
 
   return (
     <>
@@ -149,17 +171,21 @@ export default function Stock() {
             const tipo = tab === 'insumos' ? 'ins' : 'art';
             const min = tipo === 'ins' ? x.minimo : x.stock_minimo;
             const paso = tipo === 'ins' ? Number(x.paso) || 1 : 1;
-            const bajo = Number(x.stock) <= Number(min);
+            const nivel = nivelStock(x.stock, min);
+            const bajo = nivel === 'bajo';
             return (
               <div key={x.id} className="item">
-                <div className="item-cuerpo clic" onClick={() => { setSel({ ...x, tipo }); setModo(tipo === 'art' ? 'ingreso' : 'consumo'); setValor(''); setNota(''); }}>
+                <div className="item-cuerpo clic" onClick={() => { setSel({ ...x, tipo }); setModo(tipo === 'art' ? 'ingreso' : 'consumo'); setValor(''); setNota(''); setMinimoTxt(String(Number(tipo === 'art' ? x.stock_minimo : x.minimo) || '')); }}>
                   <div className="item-titulo">{x.nombre}</div>
-                  <div className="item-sub">{bajo ? <span className="rojo-t">⚠ Bajo mínimo ({cant(min)})</span> : `Mínimo ${cant(min)}`}{tipo === 'ins' ? ` · ${x.unidad}` : ''}</div>
+                  <div className="item-sub">
+                    {bajo ? <span className="rojo-t">⚠️ Comprar · mínimo {cant(min)}</span> : nivel === 'cerca' ? <span className="ambar-t">🟡 Se está acabando · mínimo {cant(min)}</span> : Number(min) > 0 ? `Mínimo ${cant(min)}` : <span className="suave">Sin mínimo · tocá para cargarlo</span>}
+                    {tipo === 'ins' ? ` · ${x.unidad}` : ''}
+                  </div>
                 </div>
                 <div className="stepper">
                   <button onClick={() => rapido(tipo, x, -paso)}>−</button>
                 </div>
-                <div className={`stock-num mono ${bajo ? 'stock-bajo' : ''}`}>{cant(x.stock)}</div>
+                <div className={`stock-num mono ${bajo ? 'stock-bajo' : nivel === 'cerca' ? 'stock-cerca' : ''}`}>{cant(x.stock)}</div>
                 <div className="stepper">
                   <button onClick={() => rapido(tipo, x, paso)}>+</button>
                 </div>
@@ -196,6 +222,14 @@ export default function Stock() {
                 <input inputMode="decimal" value={valor} onChange={(e) => setValor(e.target.value)} autoFocus />
               </Campo>
               <Campo label="Nota (opcional)"><input value={nota} onChange={(e) => setNota(e.target.value)} /></Campo>
+              <div className="tarjeta" style={{ padding: 12, marginBottom: 0 }}>
+                <div className="campo-label">🔔 Avisarme cuando quede en (stock mínimo)</div>
+                <div className="voz">
+                  <input inputMode="decimal" value={minimoTxt} onChange={(e) => setMinimoTxt(e.target.value)} placeholder="0" />
+                  <button className="btn borde" onClick={guardarMinimo}>Guardar</button>
+                </div>
+                <div className="campo-ayuda">Te salta alerta amarilla cuando se acerca y roja cuando llega a ese número.</div>
+              </div>
             </div>
           </>
         )}
@@ -247,6 +281,45 @@ export default function Stock() {
             <b className={Number(h.cantidad) > 0 ? 'verde-t' : 'rojo-t'}>{Number(h.cantidad) > 0 ? '+' : ''}{cant(h.cantidad)}</b>
           </div>
         )))}
+      </Hoja>
+      {/* LISTA DE COMPRAS */}
+      <Hoja abierta={!!compras} titulo="🛒 Lista de compras" onCerrar={() => setCompras(null)}
+        pie={compras && (compras.faltan.length || compras.cong.length) ? (
+          <div className="fila-btns">
+            <button className="btn borde" onClick={copiarCompras}>📋 Copiar</button>
+            <a className="btn verde" href={linkWhatsapp('', compras.texto)} target="_blank" rel="noreferrer">💬 Compartir</a>
+          </div>
+        ) : null}>
+        {compras && (!compras.faltan.length && !compras.cong.length ? (
+          <Vacio emoji="🙌" texto="Todo está por arriba del mínimo. No hace falta comprar nada." />
+        ) : (
+          <>
+            {compras.faltan.length > 0 && (
+              <div className="lista">
+                {compras.faltan.map((i) => (
+                  <div key={i.id} className="item">
+                    <div className="item-cuerpo"><div className="item-titulo">{i.nombre}</div><div className="item-sub">Hay {cant(i.stock)} {i.unidad} · mínimo {cant(i.minimo)}</div></div>
+                    <div className="item-der rojo-t">+{cant(sugerido(i.stock, i.minimo, i.paso))} {i.unidad}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {compras.cong.length > 0 && (
+              <>
+                <div className="campo-label">🧊 Congeladas a producir</div>
+                <div className="lista">
+                  {compras.cong.map((a) => (
+                    <div key={a.id} className="item">
+                      <div className="item-cuerpo"><div className="item-titulo">{a.nombre}</div><div className="item-sub">Hay {cant(a.stock)} · mínimo {cant(a.stock_minimo)}</div></div>
+                      <div className="item-der rojo-t">+{cant(sugerido(a.stock, a.stock_minimo, 1))}</div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+            <p className="suave chico-t">“Compartir” abre WhatsApp para que elijas a quién mandársela.</p>
+          </>
+        ))}
       </Hoja>
       <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
     </>

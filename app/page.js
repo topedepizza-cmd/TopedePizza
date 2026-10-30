@@ -14,7 +14,7 @@ const ENTREGA = {
 };
 
 export default function Comandas() {
-  const { avisar, perfil } = useApp();
+  const { avisar, perfil, alertas } = useApp();
   const router = useRouter();
   const [filtro, setFiltro] = useState('hoy');
   const [jornada, setJornada] = useState(null);
@@ -88,6 +88,16 @@ export default function Comandas() {
           <div className="k-sub">{abiertas.length} abiertas{vueltos > 0 ? ` · vuelto afuera ${money(vueltos)}` : ''}</div>
         </div>
       </div>
+
+      {alertas?.length > 0 && (() => {
+        const bajos = alertas.filter((a) => a.nivel === 'bajo');
+        return (
+          <Link href="/stock" className={`alerta-stock${bajos.length ? '' : ' cerca'}`}>
+            <b>{bajos.length ? `⚠️ ${bajos.length} sin stock suficiente` : '🟡 Stock acercándose al mínimo'}{bajos.length && alertas.length > bajos.length ? ` · ${alertas.length - bajos.length} cerca` : ''}</b>
+            <span>{alertas.slice(0, 4).map((a) => `${a.nombre} (${Number(a.stock)} ${a.unidad})`).join(' · ')}{alertas.length > 4 ? '…' : ''} — tocá para ver</span>
+          </Link>
+        );
+      })()}
 
       <Chips
         valor={filtro}
