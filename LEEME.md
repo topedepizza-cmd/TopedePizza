@@ -1,7 +1,7 @@
-# 🍕 Tope de Pizza — Instalación limpia
+# 🍕 Tope de Pizza
 
 ## 1. Supabase
-1. SQL Editor → New query → pegá TODO `supabase/TOPE_DE_PIZZA_INSTALACION_LIMPIA.sql` → Run.
+1. SQL Editor → New query → pegá TODO `supabase/TOPE_DE_PIZZA_ACTUALIZACION_SEGURA.sql` → Run. No borra nada: usuarios, comandas, precios y cadetes quedan como están.
 2. Authentication → Sign In / Providers → Email: destildá "Allow new users to sign up".
 
 ## 2. GitHub (repo nuevo y limpio)

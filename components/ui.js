@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { embedMapa, linkMapa } from '@/lib/utils';
 
 export function Hoja({ abierta, titulo, onCerrar, children, pie }) {
   useEffect(() => {
@@ -128,5 +129,19 @@ export function BotonInstalar() {
         <div className="aviso azul" style={{ marginTop: 12 }}>Si ya la tenías agregada con el ícono viejo, borrala de la pantalla de inicio y agregala de nuevo.</div>
       </Hoja>
     </>
+  );
+}
+
+// Mapa para revisar que la dirección esté bien antes de mandarla al cadete
+export function MapaDireccion({ direccion, alto = 230 }) {
+  if (!String(direccion || '').trim()) return null;
+  return (
+    <div className="mapa">
+      <iframe title="Mapa" src={embedMapa(direccion)} style={{ height: alto }} loading="lazy" referrerPolicy="no-referrer-when-downgrade" />
+      <div className="mapa-pie">
+        <span>¿El pin está bien? Si no, corregí la dirección (calle y número).</span>
+        <a href={linkMapa(direccion)} target="_blank" rel="noreferrer">Abrir Maps ↗</a>
+      </div>
+    </div>
   );
 }

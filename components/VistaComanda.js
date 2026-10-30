@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from './AppShell';
-import { Hoja, Chips, Confirmar } from './ui';
+import { Hoja, Chips, Confirmar, MapaDireccion } from './ui';
 import { money, cant, fechaHora, nombreCuenta, iconoCuenta, CUENTAS, textoComanda, linkWhatsapp, linkMapa, armarMensaje } from '@/lib/utils';
 
 export default function VistaComanda({ comanda: c, items, cadete, recargar, recienCreada }) {
@@ -76,6 +76,17 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
     titulo: '¿Deshacer el cobro?', mensaje: 'Se descuenta de la caja y la comanda vuelve a “sin cobrar”.', boton: 'Deshacer cobro',
     onOk: () => accion(() => rpc('reabrir_comanda', { p_id: c.id }), 'Cobro deshecho'),
   });
+  const eliminar = () => setConfirmar({
+    titulo: `¿Eliminar comanda #${c.numero}?`, boton: 'Eliminar para siempre', peligro: true,
+    mensaje: 'Desaparece del todo: no queda ni como anulada, no cuenta en informes y se saca de la caja y del stock. No se puede deshacer.',
+    onOk: async () => {
+      try {
+        await rpc('eliminar_comanda', { p_id: c.id });
+        avisar(`Comanda #${c.numero} eliminada`);
+        router.replace('/');
+      } catch (e) { avisar(e.message, 'error'); }
+    },
+  });
   const anular = () => setConfirmar({
     titulo: `¿Anular comanda #${c.numero}?`, mensaje: 'Se devuelve el stock y, si estaba cobrada, se descuenta de la caja.', boton: 'Anular', peligro: true,
     pedirTexto: 'Motivo (opcional)',
@@ -103,6 +114,28 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
       {c.estado === 'abierta' && <div className="aviso">⏳ Sin cobrar{Number(c.vuelto_registrado) > 0 ? ` · el cadete lleva ${money(c.vuelto_registrado)} de vuelto` : ''}</div>}
       {c.estado === 'cobrada' && <div className="aviso verde">✔ Cobrada por {nombreCuenta(c.forma_pago)} · {fechaHora(c.cobrada_at)}</div>}
       {c.estado === 'anulada' && <div className="aviso rojo">Anulada{c.motivo_anulacion ? `: ${c.motivo_anulacion}` : ''}</div>}
+
+      <div className="tarjeta">
+        <h2>👤 Cliente</h2>
+        <div className="item-titulo" style={{ fontSize: 17 }}>{c.cliente_nombre || 'Sin nombre'}</div>
+        {nroPedido > 1 && (
+          <div style={{ margin: '6px 0' }}>
+            <span className={`badge ${nroPedido % (config?.premio_cada || 10) === 0 ? 'b-rojo' : 'b-ambar'}`}>
+              ⭐ Cliente frecuente · pedido N° {nroPedido}{nroPedido % (config?.premio_cada || 10) === 0 ? ' 🎁 ¡le toca regalito!' : ''}
+            </span>
+          </div>
+        )}
+        {c.tipo_entrega === 'delivery' ? (
+          c.cliente_direccion ? (
+            <>
+              <div className="item-sub" style={{ marginTop: 4 }}>📍 {c.cliente_direccion}{c.cliente_referencia ? ` (${c.cliente_referencia})` : ''}</div>
+              {c.estado !== 'anulada' && <MapaDireccion direccion={c.cliente_direccion} alto={200} />}
+            </>
+          ) : <div className="aviso" style={{ marginTop: 6 }}>Falta la dirección: cargala con ✏️ Editar antes de mandarla al cadete.</div>
+        ) : <div className="item-sub">🏠 Retira en el local</div>}
+        {c.cliente_telefono && <a className="item-sub" style={{ display: 'block', marginTop: 4 }} href={`tel:${c.cliente_telefono}`}>📞 {c.cliente_telefono}</a>}
+        {c.tipo_entrega === 'delivery' && <div className="item-sub" style={{ marginTop: 4 }}>🛵 {cadete?.nombre || 'Sin cadete'}</div>}
+      </div>
 
       {c.estado !== 'anulada' && (
         <div className="tarjeta">
@@ -136,23 +169,6 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
           </div>
         </div>
       )}
-
-      <div className="tarjeta">
-        <h2>👤 Cliente</h2>
-        <div className="item-titulo" style={{ fontSize: 17 }}>{c.cliente_nombre || 'Sin nombre'}</div>
-        {nroPedido > 1 && (
-          <div style={{ margin: '6px 0' }}>
-            <span className={`badge ${nroPedido % (config?.premio_cada || 10) === 0 ? 'b-rojo' : 'b-ambar'}`}>
-              ⭐ Cliente frecuente · pedido N° {nroPedido}{nroPedido % (config?.premio_cada || 10) === 0 ? ' 🎁 ¡le toca regalito!' : ''}
-            </span>
-          </div>
-        )}
-        {c.tipo_entrega === 'delivery' ? (
-          c.cliente_direccion && <a className="item-sub" style={{ display: 'block', marginTop: 4 }} href={linkMapa(c.cliente_direccion)} target="_blank" rel="noreferrer">📍 {c.cliente_direccion}{c.cliente_referencia ? ` (${c.cliente_referencia})` : ''}</a>
-        ) : <div className="item-sub">🏠 Retira en el local</div>}
-        {c.cliente_telefono && <a className="item-sub" style={{ display: 'block', marginTop: 4 }} href={`tel:${c.cliente_telefono}`}>📞 {c.cliente_telefono}</a>}
-        {c.tipo_entrega === 'delivery' && <div className="item-sub" style={{ marginTop: 4 }}>🛵 {cadete?.nombre || 'Sin cadete'}</div>}
-      </div>
 
       <div className="tarjeta">
         <h2>🧾 Detalle</h2>
@@ -196,6 +212,15 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
           <button className="btn peligro" disabled={trabajando} onClick={anular}>Anular</button>
         </div>
       )}
+      {c.estado === 'anulada' && (
+        <button className="btn primario bloque grande" style={{ marginBottom: 10 }} onClick={() => router.push(`/comanda/nueva?copiar=${c.id}`)}>
+          📄 Copiar y hacer una nueva
+        </button>
+      )}
+      <div className="fila-btns" style={{ marginTop: 10 }}>
+        {c.estado !== 'anulada' && <button className="btn borde" onClick={() => router.push(`/comanda/nueva?copiar=${c.id}`)}>📄 Copiar</button>}
+        <button className="btn peligro" disabled={trabajando} onClick={eliminar}>🗑 Eliminar</button>
+      </div>
       <button className="btn amarillo bloque grande" style={{ marginTop: 18 }} onClick={() => router.push('/comanda/nueva')}>＋ Nueva comanda</button>
       <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
 

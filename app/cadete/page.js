@@ -12,16 +12,14 @@ function textoRendicion({ nombre, viajes, basico, extra, total, pagada, cuenta, 
   const l = [`🛵 *Rendición ${nombre}* — Tope de Pizza`, fecha ? `📅 ${fecha}` : '', ''];
   viajes.forEach((v, i) => {
     l.push(`${i + 1}. #${v.numero} ${v.cliente_nombre || 'Cliente'} — ${v.cliente_direccion || 'sin dirección'}`);
-    l.push(`    Envío: ${money(v.envio)}${v.forma_pago === 'efectivo' ? ` · cobraste ${money(v.total)} en efectivo` : ' · pagó por Mercado Pago'}`);
+    l.push(`    Envío: ${money(v.envio)}`);
   });
-  const efectivo = viajes.filter((v) => v.forma_pago === 'efectivo').reduce((a, v) => a + Number(v.total), 0);
   const envios = viajes.reduce((a, v) => a + Number(v.envio), 0);
   l.push('');
   l.push(`🧾 Viajes: ${viajes.length} · Envíos: ${money(envios)}`);
   l.push(`➕ Básico: ${money(basico)}`);
   if (Number(extra)) l.push(`➕ Extra: ${money(extra)}`);
   l.push(`💰 *Total a cobrar: ${money(total)}*`);
-  if (efectivo > 0) l.push(`💵 Efectivo cobrado a clientes: ${money(efectivo)}`);
   l.push(pagada ? `✅ Pagado${cuenta ? ` (${nombreCuenta(cuenta)})` : ''}` : '⏳ Pendiente de pago');
   l.push('¡Gracias! 🍕');
   return l.filter((x, i) => !(x === '' && l[i - 1] === '')).join('\n');

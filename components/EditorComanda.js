@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from './AppShell';
-import { Hoja, Chips, Campo, Cargando, Confirmar } from './ui';
+import { Hoja, Chips, Campo, Cargando, Confirmar, MapaDireccion } from './ui';
 import { money, num, cant, CUENTAS, normalizar, cadeteDelDia, DIAS_LARGO, diaSemanaOperativo } from '@/lib/utils';
 import { interpretarPedido } from '@/lib/voz';
 
@@ -21,10 +21,11 @@ function itemMitad(a, b, cantidad = 1) {
   };
 }
 
-export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
+export default function EditorComanda({ comanda, copiaDe, itemsIniciales, clienteId }) {
   const { config, avisar } = useApp();
   const router = useRouter();
   const editando = !!comanda;
+  const base = comanda || copiaDe || null; // datos con los que arranca (editar o copiar)
 
   const [articulos, setArticulos] = useState(null);
   const [rubros, setRubros] = useState([]);
@@ -32,26 +33,28 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
   const [rubroSel, setRubroSel] = useState('todos');
 
   const [cliente, setCliente] = useState({
-    id: comanda?.cliente_id || null, nombre: comanda?.cliente_nombre || '', telefono: comanda?.cliente_telefono || '',
-    direccion: comanda?.cliente_direccion || '', referencia: comanda?.cliente_referencia || '',
+    id: base?.cliente_id || null, nombre: base?.cliente_nombre || '', telefono: base?.cliente_telefono || '',
+    direccion: base?.cliente_direccion || '', referencia: base?.cliente_referencia || '',
   });
   const [guardarCliente, setGuardarCliente] = useState(true);
   const [sugerencias, setSugerencias] = useState([]);
   const [todosClientes, setTodosClientes] = useState([]);
   const [ultimoPedido, setUltimoPedido] = useState(null);
   const [cantPedidos, setCantPedidos] = useState(0);
+  const [verMapa, setVerMapa] = useState(false);
+  const [dirMapa, setDirMapa] = useState('');
 
   const [items, setItems] = useState(() => (itemsIniciales || []).map((i) => ({ ...i, key: nuevaClave(), cantidad: Number(i.cantidad), precio_unit: Number(i.precio_unit) })));
-  const [tipoEntrega, setTipoEntrega] = useState(comanda?.tipo_entrega || 'delivery');
-  const [cadeteId, setCadeteId] = useState(comanda?.cadete_id || null);
-  const [envio, setEnvio] = useState(comanda ? Number(comanda.envio) : null);
+  const [tipoEntrega, setTipoEntrega] = useState(base?.tipo_entrega || 'delivery');
+  const [cadeteId, setCadeteId] = useState(base?.cadete_id || null);
+  const [envio, setEnvio] = useState(base ? Number(base.envio) : null);
   const [envioOtro, setEnvioOtro] = useState(false);
-  const [formaPago, setFormaPago] = useState(comanda?.forma_pago || 'efectivo');
-  const [pagaCon, setPagaCon] = useState(comanda?.paga_con ? String(comanda.paga_con) : '');
-  const [vuelto, setVuelto] = useState(comanda ? String(Number(comanda.vuelto) || '') : '');
-  const [vueltoManual, setVueltoManual] = useState(!!comanda);
-  const [descuento, setDescuento] = useState(comanda?.descuento ? String(comanda.descuento) : '');
-  const [notas, setNotas] = useState(comanda?.notas || '');
+  const [formaPago, setFormaPago] = useState(base?.forma_pago || 'efectivo');
+  const [pagaCon, setPagaCon] = useState(base?.paga_con ? String(base.paga_con) : '');
+  const [vuelto, setVuelto] = useState(base ? String(Number(base.vuelto) || '') : '');
+  const [vueltoManual, setVueltoManual] = useState(!!base);
+  const [descuento, setDescuento] = useState(base?.descuento ? String(base.descuento) : '');
+  const [notas, setNotas] = useState(base?.notas || '');
 
   const [hojaMitad, setHojaMitad] = useState(false);
   const [mitadA, setMitadA] = useState(null);
@@ -78,7 +81,7 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
       setRubros(r || []);
       setCadetes(c || []);
       setTodosClientes((cls || []).map((x) => ({ ...x, _txt: normalizar(`${x.nombre} ${x.telefono || ''} ${String(x.telefono || '').replace(/\D/g, '')} ${x.direccion || ''}`) })));
-      if (!comanda && c?.length) setCadeteId((cadeteDelDia(c) || c[0]).id);
+      if (!base && c?.length) setCadeteId((cadeteDelDia(c) || c[0]).id);
       if (!comanda && clienteId) {
         const { data: cl } = await supabase.from('clientes').select('*').eq('id', clienteId).maybeSingle();
         if (cl) elegirCliente(cl);
@@ -88,11 +91,17 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
   }, [comanda, clienteId]);
 
   useEffect(() => {
-    if (envio === null && config && !comanda) {
+    if (envio === null && config && !base) {
       const sug = config.envios_sugeridos || [];
       setEnvio(sug.length ? Number(sug[0]) : 0);
     }
   }, [config, envio, comanda]);
+
+  // el mapa se actualiza cuando dejás de escribir la dirección
+  useEffect(() => {
+    const t = setTimeout(() => setDirMapa(cliente.direccion), 800);
+    return () => clearTimeout(t);
+  }, [cliente.direccion]);
 
   // ---- clientes
   // autocompletar: busca entre todos los clientes guardados mientras escribís
@@ -255,7 +264,7 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
       <header className="cabecera">
         <div className="cab-izq">
           <img className="cab-logo" src="/logo-chico.png" alt="" />
-          <h1>{editando ? `Editar #${comanda.numero}` : 'Nueva comanda'}</h1>
+          <h1>{editando ? `Editar #${comanda.numero}` : copiaDe ? `Copia de #${copiaDe.numero}` : 'Nueva comanda'}</h1>
         </div>
         <button className="btn borde chico" onClick={() => (items.length ? setConfirmar({ titulo: '¿Salir sin guardar?', mensaje: 'Se pierde lo que cargaste en esta comanda.', boton: 'Salir', peligro: true, onOk: () => router.push(editando ? `/comanda/${comanda.id}` : '/') }) : router.push('/'))}>✕ Salir</button>
       </header>
@@ -299,7 +308,12 @@ export default function EditorComanda({ comanda, itemsIniciales, clienteId }) {
           <input placeholder="Teléfono" inputMode="tel" value={cliente.telefono} onChange={(e) => setCliente({ ...cliente, telefono: e.target.value })} />
           <input placeholder="Referencia (casa, timbre…)" value={cliente.referencia} onChange={(e) => setCliente({ ...cliente, referencia: e.target.value })} />
         </div>
-        <input style={{ marginTop: 10 }} placeholder="Dirección" value={cliente.direccion} onChange={(e) => setCliente({ ...cliente, direccion: e.target.value })} />
+        <div className="voz" style={{ marginTop: 10 }}>
+          <input placeholder="Dirección (calle y número)" value={cliente.direccion} onChange={(e) => setCliente({ ...cliente, direccion: e.target.value })} />
+          <button type="button" className={verMapa ? 'btn primario' : 'btn borde'} style={{ flex: 'none', padding: '0 14px' }} disabled={!cliente.direccion.trim()} onClick={() => setVerMapa(!verMapa)}>🗺️</button>
+        </div>
+        {verMapa && <MapaDireccion direccion={dirMapa} />}
+        {!verMapa && cliente.direccion.trim() && <div className="campo-ayuda">Tocá 🗺️ para revisar en el mapa. Se busca en Yerba Buena, Tucumán, salvo que escribas otra localidad.</div>}
         <label className="check">
           <input type="checkbox" checked={guardarCliente} onChange={(e) => setGuardarCliente(e.target.checked)} />
           {cliente.id ? 'Actualizar datos del cliente' : 'Guardar como cliente nuevo'}
