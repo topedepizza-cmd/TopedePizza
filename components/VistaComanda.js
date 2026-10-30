@@ -14,8 +14,6 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
   const [trabajando, setTrabajando] = useState(false);
   const [confirmar, setConfirmar] = useState(null);
   const [enviados, setEnviados] = useState({});
-  const [linkMp, setLinkMp] = useState(null);
-  const [errorMp, setErrorMp] = useState(null);
   const [nroPedido, setNroPedido] = useState(null);
 
   // cliente frecuente: número de pedido de este cliente
@@ -26,24 +24,6 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
       .then(({ count }) => setNroPedido(count || null));
   }, [c.cliente_id, c.id]);
 
-  // link de pago de Mercado Pago (si está activado en Configuración)
-  useEffect(() => {
-    if (!config?.mp_link_auto || c.estado === 'anulada' || c.estado === 'cobrada') return;
-    (async () => {
-      try {
-        const { data } = await supabase.auth.getSession();
-        const r = await fetch('/api/mp-link', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session?.access_token}` },
-          body: JSON.stringify({ comanda_id: c.id }),
-        });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error);
-        setLinkMp(j.link);
-      } catch (e) { setErrorMp(e.message); }
-    })();
-  }, [config?.mp_link_auto, c.id, c.total, c.estado]);
-
   const texto = textoComanda(c, items, { negocio: config?.nombre_negocio });
   const linkCadete = linkWhatsapp(cadete?.telefono || '', texto);
   const detalle = [
@@ -51,12 +31,28 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
     ...(Number(c.envio) > 0 ? [`• Envío — ${money(c.envio)}`] : []),
     ...(Number(c.descuento) > 0 ? [`• Descuento — -${money(c.descuento)}`] : []),
   ].join('\n');
-  const datosMsj = {
-    cliente: (c.cliente_nombre || '').split(' ')[0], numero: c.numero, total: money(c.total), detalle,
-    alias: config?.alias_pago || '', titular: config?.titular_pago || '', link_mp: linkMp || '',
-  };
-  const msjConfirmacion = armarMensaje(config?.mensaje_confirmacion || '¡Hola {cliente}! Recibimos tu pedido:\n\n{detalle}\n💰 Total: {total}\n\n🛵 Te avisamos cuando salga.', datosMsj);
-  const msjSalio = armarMensaje(config?.mensaje_cliente || '¡Hola {cliente}! Tu pedido ya salió 🛵', datosMsj);
+  const alias = config?.alias_pago || '';
+  const titular = config?.titular_pago || '';
+  const pagada = c.estado === 'cobrada';
+  const efectivo = c.forma_pago === 'efectivo';
+  const vuelto = Number(c.paga_con) > Number(c.total) ? `(abonás con ${money(c.paga_con)}, te llevamos ${money(Number(c.paga_con) - Number(c.total))} de vuelto)` : '';
+  // bloque de pago del mensaje de confirmación
+  const pagoConfirmacion = pagada
+    ? `💰 Total: ${money(c.total)} — ✅ ya está pago, ¡gracias!`
+    : efectivo
+      ? [`💵 *Total a abonar en efectivo: ${money(c.total)}*`, vuelto, alias ? `💳 Si preferís Mercado Pago: alias *${alias}*${titular ? ` (a nombre de ${titular})` : ''}` : ''].filter(Boolean).join('\n')
+      : [`📱 *Total a transferir por Mercado Pago: ${money(c.total)}*`, alias ? `🏦 Alias: *${alias}*` : '', titular ? `👤 A nombre de: ${titular}` : '', '(mandanos el comprobante por acá 🙌)'].filter(Boolean).join('\n');
+  // bloque de pago del mensaje "salió": si ya pagó no dice nada
+  const pagoSalio = pagada
+    ? ''
+    : efectivo
+      ? [`💵 Tené listo el efectivo: *${money(c.total)}*`, vuelto ? `(el cadete lleva vuelto para ${money(c.paga_con)})` : ''].filter(Boolean).join('\n')
+      : `📱 Si todavía no transferiste: *${money(c.total)}*${alias ? ` al alias *${alias}*` : ''}`;
+  const base = { cliente: (c.cliente_nombre || '').split(' ')[0], numero: c.numero, total: money(c.total), detalle, alias, titular };
+  const msjConfirmacion = armarMensaje(config?.mensaje_confirmacion || '¡Hola {cliente}! 🍕 Recibimos tu pedido en *Tope de Pizza*\n\n{detalle}\n\n{pago}\n\n🛵 Te avisamos cuando tu pedido salga. ¡Gracias!', { ...base, pago: pagoConfirmacion });
+  const msjSalio = c.tipo_entrega === 'retiro'
+    ? armarMensaje('✅ Tu pedido de *Tope de Pizza* ya está listo para retirar.\n{pago}\n¡Te esperamos! 🍕', { ...base, pago: pagoSalio })
+    : armarMensaje(config?.mensaje_cliente || '🛵 Tu pedido de *Tope de Pizza* ya salió y está en camino.\n{pago}\n¡Que lo disfrutes! 🍕', { ...base, pago: pagoSalio });
   const telCliente = c.cliente_telefono;
 
   async function marcarEnCamino() {
@@ -117,7 +113,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
               <a className={`paso-msj${enviados.conf ? ' hecho' : ''}`} href={linkWhatsapp(telCliente, msjConfirmacion)} target="_blank" rel="noreferrer"
                 onClick={() => setEnviados({ ...enviados, conf: true })}>
                 <span className="paso-n">{enviados.conf ? '✔' : '1'}</span>
-                <span><b>Confirmar pedido al cliente</b><small>Detalle, total{linkMp ? ', link de pago de Mercado Pago' : ''} y alias</small></span>
+                <span><b>Confirmar pedido al cliente</b><small>Detalle, total y cómo paga{!efectivo && !pagada ? ' (con tu alias)' : ''}</small></span>
               </a>
             )}
             {c.tipo_entrega === 'delivery' && (
@@ -131,14 +127,13 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
               <a className={`paso-msj${enviados.salio || c.estado_entrega !== 'preparando' ? ' hecho' : ''}`} href={linkWhatsapp(telCliente, msjSalio)} target="_blank" rel="noreferrer"
                 onClick={() => { setEnviados({ ...enviados, salio: true }); marcarEnCamino(); }}>
                 <span className="paso-n">{enviados.salio || c.estado_entrega !== 'preparando' ? '✔' : '3'}</span>
-                <span><b>{c.tipo_entrega === 'delivery' ? '🛵 Salió: avisar al cliente' : 'Avisar que está listo para retirar'}</b><small>{c.tipo_entrega === 'delivery' ? 'Tocalo cuando el cadete sale. La comanda pasa a “En camino”.' : 'Le llega que ya puede pasar a buscarlo'}</small></span>
+                <span><b>{c.tipo_entrega === 'delivery' ? '🛵 Salió: avisar al cliente' : 'Avisar que está listo para retirar'}</b><small>{c.tipo_entrega === 'delivery' ? `Tocalo cuando el cadete sale${pagada ? '' : efectivo ? ' · le recuerda el efectivo' : ''}. Pasa a “En camino”.` : 'Le llega que ya puede pasar a buscarlo'}</small></span>
               </a>
             )}
             {!telCliente && c.tipo_entrega === 'delivery' && c.estado_entrega === 'preparando' && (
               <button className="btn borde bloque" onClick={marcarEnCamino}>🛵 Salió el pedido</button>
             )}
           </div>
-          {errorMp && <div className="chico-t suave" style={{ marginTop: 8 }}>Link de Mercado Pago: {errorMp}</div>}
         </div>
       )}
 

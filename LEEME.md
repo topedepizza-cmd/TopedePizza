@@ -11,7 +11,7 @@
 
 ## 3. Vercel (proyecto nuevo)
 1. Add New → Project → importá `tope-de-pizza`.
-2. Environment Variables: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (opcional `MP_ACCESS_TOKEN`).
+2. Environment Variables: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
 3. Deploy. Después borrá el proyecto viejo de Vercel.
 
 ## 4. iPhone

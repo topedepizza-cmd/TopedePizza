@@ -33,7 +33,7 @@ export default function Config() {
       setF({
         nombre_negocio: config.nombre_negocio || '', telefono_negocio: config.telefono_negocio || '',
         alias_pago: config.alias_pago || '', titular_pago: config.titular_pago || '',
-        tel_socia: config.tel_socia || '', premio_cada: String(config.premio_cada ?? 10), mp_link_auto: !!config.mp_link_auto,
+        tel_socia: config.tel_socia || '', premio_cada: String(config.premio_cada ?? 10),
         basico_cadete: String(config.basico_cadete ?? 15000), envios: (config.envios_sugeridos || []).join(', '),
         egresos: (config.conceptos_egreso || []).join('\n'), ingresos: (config.conceptos_ingreso || []).join('\n'),
         mensaje_confirmacion: config.mensaje_confirmacion || '', mensaje_cliente: config.mensaje_cliente || '',
@@ -46,7 +46,7 @@ export default function Config() {
     const d = {
       nombre_negocio: f.nombre_negocio.trim() || 'Tope de Pizza', telefono_negocio: f.telefono_negocio || null,
       alias_pago: f.alias_pago.trim() || null, titular_pago: f.titular_pago.trim() || null,
-      tel_socia: f.tel_socia.trim() || null, premio_cada: Math.max(num(f.premio_cada), 2), mp_link_auto: !!f.mp_link_auto,
+      tel_socia: f.tel_socia.trim() || null, premio_cada: Math.max(num(f.premio_cada), 2),
       basico_cadete: num(f.basico_cadete),
       envios_sugeridos: f.envios.split(/[,;\n]/).map((x) => num(x)).filter((x) => x > 0),
       conceptos_egreso: f.egresos.split('\n').map((x) => x.trim()).filter(Boolean),
@@ -132,17 +132,10 @@ export default function Config() {
           <Campo label="Alias para cobrar"><input autoCapitalize="none" value={f.alias_pago} onChange={(e) => setF({ ...f, alias_pago: e.target.value })} placeholder="tope.de.pizza" /></Campo>
           <Campo label="A nombre de"><input value={f.titular_pago} onChange={(e) => setF({ ...f, titular_pago: e.target.value })} /></Campo>
         </div>
-        <label className="check">
-          <input type="checkbox" checked={f.mp_link_auto} onChange={(e) => setF({ ...f, mp_link_auto: e.target.checked })} />
-          <span>Mandar <b>link de pago de Mercado Pago</b> con el total exacto</span>
-        </label>
-        {f.mp_link_auto && (
-          <div className="aviso azul">Necesita tu Access Token de Mercado Pago cargado en Vercel como <b>MP_ACCESS_TOKEN</b>. Ojo: MP cobra comisión por los pagos con link; la transferencia al alias no tiene costo.</div>
-        )}
-        <Campo label="Mensaje al confirmar el pedido" ayuda="Podés usar {cliente} {numero} {detalle} {total} {link_mp} {alias} {titular}. Si un dato está vacío, esa línea no se manda.">
+        <Campo label="Mensaje al confirmar el pedido" ayuda="{pago} se arma solo según cómo paga: efectivo, Mercado Pago (con tu alias) o ya pagado. También: {cliente} {numero} {detalle} {total} {alias} {titular}.">
           <textarea rows={10} value={f.mensaje_confirmacion} onChange={(e) => setF({ ...f, mensaje_confirmacion: e.target.value })} />
         </Campo>
-        <Campo label="Mensaje cuando sale el pedido" ayuda="Podés usar {cliente} {numero} {total} {alias} {titular}">
+        <Campo label="Mensaje cuando sale el pedido" ayuda="{pago}: si es efectivo dice cuánto tener listo; si ya está pagado no dice nada. También: {cliente} {numero} {total}.">
           <textarea rows={3} value={f.mensaje_cliente} onChange={(e) => setF({ ...f, mensaje_cliente: e.target.value })} />
         </Campo>
       </div>

@@ -704,7 +704,7 @@ begin
     ('B02', 'Agua 1.5 L',  r_beb, s_agu, 2000, false, 'agua', 8),
     ('B03', 'Cerveza lata',r_beb, s_cer, 2500, false, 'cerveza, birra', 9);
   insert into articulos (codigo, nombre, rubro_id, subrubro_id, precio, controla_stock, stock, stock_minimo, alias, orden) values
-    ('C01', 'Muzzarella congelada', r_con, s_con, 7000, true, 0, 5, 'congelada, muzza congelada', 10);
+    ('C01', 'Muzzarella congelada', r_con, s_con, 7000, true, 0, 0, 'congelada, muzza congelada', 10);
 
   insert into insumos (nombre, unidad, paso, minimo, orden) values
     ('Harina', 'kg', 1, 10, 1), ('Queso muzzarella', 'kg', 1, 5, 2), ('Salsa de tomate', 'l', 1, 3, 3),
@@ -864,26 +864,20 @@ update public.config set mensaje_confirmacion =
 '¡Hola {cliente}! 🍕 Recibimos tu pedido en *Tope de Pizza*
 
 {detalle}
-💰 *Total: {total}*
 
-💳 Para pagar por Mercado Pago:
-👉 Link de pago: {link_mp}
-🏦 Alias: *{alias}*
-👤 A nombre de: {titular}
-(mandanos el comprobante por acá 🙌)
+{pago}
 
 🛵 Te avisamos cuando tu pedido salga. ¡Gracias!'
-where id = 1 and coalesce(mensaje_confirmacion, '') = '';
+where id = 1;
 update public.config set mensaje_cliente =
-'¡Hola {cliente}! 🛵 Tu pedido de *Tope de Pizza* ya salió y está en camino. Total: {total}. ¡Que lo disfrutes! 🍕'
+'🛵 Tu pedido de *Tope de Pizza* ya salió y está en camino.
+{pago}
+¡Que lo disfrutes! 🍕'
 where id = 1;
 
--- 6) Cierres por WhatsApp, cliente frecuente y link de Mercado Pago
+-- 6) Cierres por WhatsApp y cliente frecuente
 alter table public.config add column if not exists tel_socia text;
 alter table public.config add column if not exists premio_cada int not null default 10;
-alter table public.config add column if not exists mp_link_auto boolean not null default false;
-alter table public.comandas add column if not exists mp_link text;
-alter table public.comandas add column if not exists mp_link_total numeric;
 
 -- =====================================================================
 -- LISTO ✅  Entrá con tu usuario (lo que va antes del @ de tu mail).
