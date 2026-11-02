@@ -3,16 +3,34 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase, rpc, traerTodo } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
-import { Cabecera, Chips, Cargando, Vacio, Barra } from '@/components/ui';
+import { Cabecera, Chips, Cargando, Vacio, Barra, Hoja, Confirmar } from '@/components/ui';
 import FiltroFechas from '@/components/FiltroFechas';
 import { rangoFechas } from '@/lib/fechas';
-import { money, hora, CUENTAS, nombreCuenta, iconoCuenta } from '@/lib/utils';
+import { money, hora, fechaHora, CUENTAS, nombreCuenta, iconoCuenta, categoriaMov, CATEGORIAS, depurarMovimientos, netoMovs } from '@/lib/utils';
 import { descargarExcel, descargarPDF, precargarDescargas } from '@/lib/descargas';
 
-// movimientos que solo mueven plata de un lado a otro (no son ingresos/gastos reales)
-const INTERNOS = ['Vuelto a cadete', 'Devolución vuelto cadete', 'Ajuste vuelto cadete', 'Movimiento entre cuentas'];
 const fechaLarga = (f) => (f ? new Date(f + 'T12:00').toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'short' }) : '');
 const fechaCorta = (f) => (f ? new Date(f + 'T12:00').toLocaleDateString('es-AR') : '');
+
+// qué categorías entran en cada vista
+const VISTAS = {
+  todo: ['venta', 'otro_ingreso', 'gasto', 'cadete', 'interno'],
+  ingresos: ['venta', 'otro_ingreso'],
+  ventas: ['venta'],
+  otros: ['otro_ingreso'],
+  egresos: ['gasto', 'cadete'],
+  gastos: ['gasto'],
+  cadetes: ['cadete'],
+};
+const TITULOS = { todo: 'Movimientos', ingresos: 'Ingresos', ventas: 'Ventas', otros: 'Otros ingresos', egresos: 'Egresos', gastos: 'Gastos', cadetes: 'Pagos a cadetes' };
+const esManual = (m) => !m.comanda_id && !m.liquidacion_id;
+
+function vistaInicial(sp) {
+  const t = sp.get('tipo');
+  if (t === 'ingreso') return 'ingresos';
+  if (t === 'egreso') return 'egresos';
+  return VISTAS[sp.get('vista')] ? sp.get('vista') : 'todo';
+}
 
 function Movimientos() {
   const { avisar } = useApp();
@@ -22,15 +40,16 @@ function Movimientos() {
     ? { modo: sp.get('desde') === sp.get('hasta') ? 'dia' : 'rango', desde: sp.get('desde'), hasta: sp.get('hasta') || sp.get('desde') }
     : { modo: sp.get('modo') || 'hoy' }));
   const [cuenta, setCuenta] = useState(sp.get('cuenta') || 'todas');
-  const [tipo, setTipo] = useState(sp.get('tipo') || 'todos');
+  const [vista, setVista] = useState(() => vistaInicial(sp));
   const [concepto, setConcepto] = useState('todos');
   const [buscar, setBuscar] = useState('');
-  const [sinInternos, setSinInternos] = useState(sp.get('tipo') ? true : false);
+  const [verInternos, setVerInternos] = useState(false);
   const [datos, setDatos] = useState(null);
   const [bajando, setBajando] = useState(false);
+  const [sel, setSel] = useState(null);
+  const [confirmar, setConfirmar] = useState(null);
 
   const r = useMemo(() => rangoFechas(periodo), [periodo]);
-
   useEffect(() => { precargarDescargas(); }, []);
 
   const cargar = useCallback(async () => {
@@ -40,12 +59,12 @@ function Movimientos() {
       const jornadas = jor || [];
       const ids = jornadas.map((j) => j.id);
       const movs = ids.length ? await traerTodo(() => supabase.from('movimientos').select('*').in('jornada_id', ids).order('id')) : [];
-      // saldo final: si la última jornada sigue abierta, se calcula en vivo
       const ultima = jornadas[jornadas.length - 1];
       let finales = null;
       if (ultima?.abierta) finales = (await rpc('saldos_jornada', { p_jornada: ultima.id }))?.[0] || null;
       else if (ultima) finales = { efectivo: ultima.sf_efectivo, mercadopago: ultima.sf_mercadopago, transferencia: ultima.sf_transferencia };
-      setDatos({ jornadas, movs, finales });
+      // los cobros deshechos / anulados se sacan junto con su venta: no son movimientos reales
+      setDatos({ jornadas, movs: depurarMovimientos(movs).map((m) => ({ ...m, cat: categoriaMov(m) })), finales });
     } catch (e) {
       avisar(e.message, 'error');
       setDatos({ jornadas: [], movs: [], finales: null });
@@ -54,37 +73,40 @@ function Movimientos() {
   useEffect(() => { cargar(); }, [cargar]);
 
   const fechaDe = useMemo(() => Object.fromEntries((datos?.jornadas || []).map((j) => [j.id, j.fecha])), [datos]);
-  const conceptos = useMemo(() => [...new Set((datos?.movs || []).map((m) => m.concepto))].sort(), [datos]);
 
-  const filtrados = useMemo(() => {
+  // filtros comunes (cuenta + búsqueda) → sirven para las tarjetas de arriba
+  const base = useMemo(() => {
     const b = buscar.trim().toLowerCase();
-    return (datos?.movs || []).filter((m) =>
-      (cuenta === 'todas' || m.cuenta === cuenta) &&
-      (tipo === 'todos' || m.tipo === tipo) &&
-      (concepto === 'todos' || m.concepto === concepto) &&
-      (!sinInternos || !INTERNOS.includes(m.concepto)) &&
-      (!b || `${m.concepto} ${m.detalle || ''}`.toLowerCase().includes(b)));
-  }, [datos, cuenta, tipo, concepto, buscar, sinInternos]);
+    return (datos?.movs || []).filter((m) => (cuenta === 'todas' || m.cuenta === cuenta) && (!b || `${m.concepto} ${m.detalle || ''}`.toLowerCase().includes(b)));
+  }, [datos, cuenta, buscar]);
 
+  const filtrados = useMemo(() => base.filter((m) =>
+    VISTAS[vista].includes(m.cat) && (vista !== 'todo' || verInternos || m.cat !== 'interno') &&
+    (concepto === 'todos' || m.concepto === concepto)), [base, vista, verInternos, concepto]);
+
+  const conceptos = useMemo(() => [...new Set(base.filter((m) => VISTAS[vista].includes(m.cat)).map((m) => m.concepto))].sort(), [base, vista]);
+
+  const totCat = (c) => netoMovs(base.filter((m) => m.cat === c)) * (c === 'gasto' || c === 'cadete' ? -1 : 1);
+  const tVentas = totCat('venta'), tOtros = totCat('otro_ingreso'), tGastos = totCat('gasto'), tCadetes = totCat('cadete');
   const ingresos = filtrados.filter((m) => m.tipo === 'ingreso').reduce((a, m) => a + Number(m.monto), 0);
   const egresos = filtrados.filter((m) => m.tipo === 'egreso').reduce((a, m) => a + Number(m.monto), 0);
 
-  // saldo inicial / final (solo tiene sentido viendo todos los movimientos de una cuenta)
-  const verSaldos = datos?.jornadas.length > 0 && tipo === 'todos' && concepto === 'todos' && !buscar.trim() && !sinInternos;
+  // saldo de la cuenta: arrancó + todo lo que se movió = ahora/al cierre
+  const verSaldos = datos?.jornadas.length > 0 && vista === 'todo' && concepto === 'todos' && !buscar.trim();
   const ctas = cuenta === 'todas' ? ['efectivo', 'mercadopago', 'transferencia'] : [cuenta];
   const saldoIni = verSaldos ? ctas.reduce((a, c) => a + Number(datos.jornadas[0]['si_' + c] || 0), 0) : 0;
   const saldoFin = verSaldos && datos.finales ? ctas.reduce((a, c) => a + Number(datos.finales[c] || 0), 0) : 0;
 
-  const porConcepto = (t) => {
+  const porConcepto = (lista) => {
     const o = {};
-    filtrados.filter((m) => m.tipo === t).forEach((m) => {
-      (o[m.concepto] ||= { nombre: m.concepto, total: 0, n: 0 });
-      o[m.concepto].total += Number(m.monto); o[m.concepto].n++;
+    lista.forEach((m) => {
+      (o[m.concepto] ||= { nombre: m.concepto === 'Venta' ? 'Ventas de comandas' : m.concepto, total: 0, n: 0 });
+      o[m.concepto].total += (m.tipo === 'ingreso' ? 1 : -1) * Number(m.monto) * (m.cat === 'gasto' || m.cat === 'cadete' ? -1 : 1); o[m.concepto].n++;
     });
     return Object.values(o).sort((a, b) => b.total - a.total);
   };
-  const conceptosIng = porConcepto('ingreso');
-  const conceptosEgr = porConcepto('egreso');
+  const resumenIng = porConcepto(filtrados.filter((m) => m.cat === 'venta' || m.cat === 'otro_ingreso'));
+  const resumenEgr = porConcepto(filtrados.filter((m) => m.cat === 'gasto' || m.cat === 'cadete'));
 
   const porDia = useMemo(() => {
     const g = {};
@@ -92,50 +114,48 @@ function Movimientos() {
     return Object.entries(g).sort((a, b) => b[0].localeCompare(a[0])).map(([f, ms]) => [f, [...ms].reverse()]);
   }, [filtrados, fechaDe]);
 
-  const tituloLista = tipo === 'ingreso' ? 'Ingresos' : tipo === 'egreso' ? 'Egresos' : 'Movimientos';
-  const filtrosTxt = [
-    cuenta !== 'todas' ? nombreCuenta(cuenta) : 'Todas las cuentas',
-    tipo !== 'todos' ? (tipo === 'ingreso' ? 'Solo ingresos' : 'Solo egresos') : '',
-    concepto !== 'todos' ? concepto : '',
-    sinInternos ? 'sin movimientos internos' : '',
-    buscar.trim() ? `“${buscar.trim()}”` : '',
-  ].filter(Boolean).join(' · ');
-  const nombreArchivo = (ext) => `caja_${tituloLista.toLowerCase()}_${r.isoA}${r.isoA !== r.isoB ? '_al_' + r.isoB : ''}${cuenta !== 'todas' ? '_' + cuenta : ''}.${ext}`;
+  // ---------- eliminar ----------
+  function pedirEliminar(m) {
+    setConfirmar({
+      titulo: `¿Eliminar ${m.tipo === 'ingreso' ? 'este ingreso' : 'este egreso'}?`,
+      mensaje: `${m.concepto}${m.detalle ? ` (${m.detalle})` : ''} · ${money(m.monto)} · ${nombreCuenta(m.cuenta)}. ${m.concepto === 'Movimiento entre cuentas' ? 'Se borran las dos partes del pase. ' : ''}El saldo se corrige solo${fechaDe[m.jornada_id] && !datos.jornadas.find((j) => j.id === m.jornada_id)?.abierta ? ', también en los cierres de ese día en adelante' : ''}.`,
+      boton: 'Eliminar', peligro: true,
+      onOk: async () => {
+        try {
+          await rpc('eliminar_movimiento', { p_id: m.id });
+          avisar('Movimiento eliminado ✔');
+          setSel(null);
+          cargar();
+        } catch (e) { avisar(e.message, 'error'); }
+      },
+    });
+  }
+
+  // ---------- descargas ----------
+  const tituloLista = TITULOS[vista];
+  const filtrosTxt = [cuenta !== 'todas' ? nombreCuenta(cuenta) : 'Todas las cuentas', concepto !== 'todos' ? concepto : '', buscar.trim() ? `“${buscar.trim()}”` : ''].filter(Boolean).join(' · ');
+  const nombreArchivo = (ext) => `caja_${tituloLista.toLowerCase().replace(/ /g, '_')}_${r.isoA}${r.isoA !== r.isoB ? '_al_' + r.isoB : ''}${cuenta !== 'todas' ? '_' + cuenta : ''}.${ext}`;
 
   async function bajarExcel() {
     setBajando(true);
     try {
       await descargarExcel(nombreArchivo('xlsx'), [
-        {
-          nombre: tituloLista,
-          filas: filtrados.map((m) => ({
-            'Fecha caja': fechaCorta(fechaDe[m.jornada_id]),
-            'Fecha y hora': new Date(m.created_at).toLocaleString('es-AR'),
-            Tipo: m.tipo === 'ingreso' ? 'Ingreso' : 'Egreso',
-            Cuenta: nombreCuenta(m.cuenta),
-            Concepto: m.concepto,
-            Detalle: m.detalle || '',
-            Ingreso: m.tipo === 'ingreso' ? Number(m.monto) : 0,
-            Egreso: m.tipo === 'egreso' ? Number(m.monto) : 0,
-            Neto: m.tipo === 'ingreso' ? Number(m.monto) : -Number(m.monto),
-            'Movimiento interno': INTERNOS.includes(m.concepto) ? 'Sí' : 'No',
-          })),
-        },
-        {
-          nombre: 'Resumen por concepto',
-          filas: [
-            ...conceptosIng.map((c) => ({ Tipo: 'Ingreso', Concepto: c.nombre, Cantidad: c.n, Total: c.total })),
-            ...conceptosEgr.map((c) => ({ Tipo: 'Egreso', Concepto: c.nombre, Cantidad: c.n, Total: c.total })),
-          ],
-        },
-        {
-          nombre: 'Por día',
-          filas: porDia.map(([f, ms]) => ({
-            Fecha: fechaCorta(f),
-            Ingresos: ms.filter((m) => m.tipo === 'ingreso').reduce((a, m) => a + Number(m.monto), 0),
-            Egresos: ms.filter((m) => m.tipo === 'egreso').reduce((a, m) => a + Number(m.monto), 0),
-          })).map((x) => ({ ...x, Neto: x.Ingresos - x.Egresos })),
-        },
+        { nombre: tituloLista, filas: filtrados.map((m) => ({
+          'Fecha caja': fechaCorta(fechaDe[m.jornada_id]), 'Fecha y hora': new Date(m.created_at).toLocaleString('es-AR'),
+          Categoría: CATEGORIAS[m.cat].nombre, Tipo: m.tipo === 'ingreso' ? 'Ingreso' : 'Egreso', Cuenta: nombreCuenta(m.cuenta),
+          Concepto: m.concepto, Detalle: m.detalle || '',
+          Ingreso: m.tipo === 'ingreso' ? Number(m.monto) : 0, Egreso: m.tipo === 'egreso' ? Number(m.monto) : 0,
+          Neto: m.tipo === 'ingreso' ? Number(m.monto) : -Number(m.monto),
+        })) },
+        { nombre: 'Resumen', filas: [
+          { Categoría: 'Ventas', Total: tVentas }, { Categoría: 'Otros ingresos', Total: tOtros },
+          { Categoría: 'Gastos', Total: tGastos }, { Categoría: 'Pagos a cadetes', Total: tCadetes },
+          { Categoría: 'Resultado (ingresos - egresos)', Total: tVentas + tOtros - tGastos - tCadetes },
+        ] },
+        { nombre: 'Por concepto', filas: [
+          ...resumenIng.map((c) => ({ Tipo: 'Ingreso', Concepto: c.nombre, Cantidad: c.n, Total: c.total })),
+          ...resumenEgr.map((c) => ({ Tipo: 'Egreso', Concepto: c.nombre, Cantidad: c.n, Total: c.total })),
+        ] },
       ]);
     } catch (e) { avisar('No se pudo generar el Excel: ' + e.message, 'error'); }
     setBajando(false);
@@ -148,19 +168,16 @@ function Movimientos() {
         archivo: nombreArchivo('pdf'),
         titulo: `${tituloLista} de caja`,
         subtitulo: `${r.etiqueta} · ${filtrosTxt}`,
-        kpis: [
-          ...(verSaldos ? [['Saldo inicial', money(saldoIni)]] : []),
-          ['Ingresos', money(ingresos)], ['Egresos', money(egresos)], ['Neto', money(ingresos - egresos)],
-          ...(verSaldos ? [['Saldo final', money(saldoFin)]] : []),
-        ],
+        kpis: [['Ventas', money(tVentas)], ['Otros ingresos', money(tOtros)], ['Gastos', money(tGastos)], ['Pagos a cadetes', money(tCadetes)],
+          ['Resultado', money(tVentas + tOtros - tGastos - tCadetes)], ...(verSaldos ? [['Saldo al empezar', money(saldoIni)], ['Saldo final', money(saldoFin)]] : [])],
         bloques: [
-          ...(conceptosIng.length ? [{ titulo: 'Ingresos por concepto', columnas: ['Concepto', 'Cant.', 'Total'], alinearDerecha: [1, 2],
-            filas: conceptosIng.map((c) => [c.nombre, c.n, money(c.total)]), pie: ['Total ingresos', '', money(ingresos)] }] : []),
-          ...(conceptosEgr.length ? [{ titulo: 'Egresos por concepto', columnas: ['Concepto', 'Cant.', 'Total'], alinearDerecha: [1, 2],
-            filas: conceptosEgr.map((c) => [c.nombre, c.n, money(c.total)]), pie: ['Total egresos', '', money(egresos)] }] : []),
-          { titulo: 'Detalle de movimientos', columnas: ['Fecha', 'Hora', 'Cuenta', 'Concepto', 'Detalle', 'Ingreso', 'Egreso'], alinearDerecha: [5, 6],
-            filas: [...filtrados].map((m) => [fechaCorta(fechaDe[m.jornada_id]), hora(m.created_at), nombreCuenta(m.cuenta), m.concepto, m.detalle || '',
-              m.tipo === 'ingreso' ? money(m.monto) : '', m.tipo === 'egreso' ? money(m.monto) : '']),
+          ...(resumenIng.length ? [{ titulo: 'Ingresos por concepto', columnas: ['Concepto', 'Cant.', 'Total'], alinearDerecha: [1, 2],
+            filas: resumenIng.map((c) => [c.nombre, c.n, money(c.total)]), pie: ['Total', '', money(resumenIng.reduce((a, c) => a + c.total, 0))] }] : []),
+          ...(resumenEgr.length ? [{ titulo: 'Egresos por concepto', columnas: ['Concepto', 'Cant.', 'Total'], alinearDerecha: [1, 2],
+            filas: resumenEgr.map((c) => [c.nombre, c.n, money(c.total)]), pie: ['Total', '', money(resumenEgr.reduce((a, c) => a + c.total, 0))] }] : []),
+          { titulo: 'Detalle', columnas: ['Fecha', 'Hora', 'Categoría', 'Cuenta', 'Concepto / detalle', 'Ingreso', 'Egreso'], alinearDerecha: [5, 6],
+            filas: filtrados.map((m) => [fechaCorta(fechaDe[m.jornada_id]), hora(m.created_at), CATEGORIAS[m.cat].nombre, nombreCuenta(m.cuenta),
+              m.concepto + (m.detalle ? ` - ${m.detalle}` : ''), m.tipo === 'ingreso' ? money(m.monto) : '', m.tipo === 'egreso' ? money(m.monto) : '']),
             pie: ['', '', '', '', 'Totales', money(ingresos), money(egresos)] },
         ],
       });
@@ -168,45 +185,63 @@ function Movimientos() {
     setBajando(false);
   }
 
+  const grupo = ['ingresos', 'ventas', 'otros'].includes(vista) ? 'ingresos' : ['egresos', 'gastos', 'cadetes'].includes(vista) ? 'egresos' : 'todo';
+  const tarjeta = (v, cat, valor, clase) => (
+    <button className={`kpi kpi-btn${vista === v ? ' elegida' : ''}`} onClick={() => { setVista(vista === v ? 'todo' : v); setConcepto('todos'); }}>
+      <div className="k-label">{CATEGORIAS[cat].icono} {CATEGORIAS[cat].nombre}</div>
+      <div className={`k-valor ${clase}`}>{money(valor)}</div>
+      <div className="k-sub">{base.filter((m) => m.cat === cat).length} mov. · tocá para ver</div>
+    </button>
+  );
+
   return (
     <>
-      <Cabecera titulo={tituloLista} sub="Caja · filtrá por fecha, cuenta y tipo" derecha={<button className="btn borde chico" onClick={() => router.push('/caja')}>← Caja</button>} />
+      <Cabecera titulo={tituloLista} sub="Caja · tocá un movimiento para verlo o eliminarlo" derecha={<button className="btn borde chico" onClick={() => router.push('/caja')}>← Caja</button>} />
 
       <FiltroFechas valor={periodo} onCambio={setPeriodo} />
-
-      <Chips valor={cuenta} onCambio={setCuenta} opciones={[{ id: 'todas', label: 'Todas' }, ...CUENTAS.map((c) => ({ id: c.id, label: `${c.icono} ${c.nombre}` }))]} />
-      <div style={{ height: 8 }} />
-      <Chips valor={tipo} onCambio={(t) => { setTipo(t); setConcepto('todos'); }} opciones={[{ id: 'todos', label: 'Todos' }, { id: 'ingreso', label: '📥 Ingresos' }, { id: 'egreso', label: '📤 Egresos' }]} />
-      <div className="filtros-caja" style={{ marginTop: 10 }}>
-        <select value={concepto} onChange={(e) => setConcepto(e.target.value)}>
-          <option value="todos">Todos los conceptos</option>
-          {conceptos.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <input placeholder="🔎 Buscar detalle…" value={buscar} onChange={(e) => setBuscar(e.target.value)} />
-      </div>
-      <label className="check" style={{ paddingTop: 0 }}>
-        <input type="checkbox" checked={sinInternos} onChange={(e) => setSinInternos(e.target.checked)} />
-        <span className="chico-t">Ocultar internos (vueltos al cadete, pase entre cuentas)</span>
-      </label>
+      <Chips valor={cuenta} onCambio={setCuenta} opciones={[{ id: 'todas', label: 'Todas las cuentas' }, ...CUENTAS.map((c) => ({ id: c.id, label: `${c.icono} ${c.nombre}` }))]} />
 
       {!datos ? <Cargando /> : (
         <>
-          <div className="kpis" style={tipo !== 'todos' ? { gridTemplateColumns: '1fr' } : undefined}>
-            {tipo !== 'egreso' && <div className="kpi"><div className="k-label">📥 Ingresos</div><div className="k-valor verde-t">{money(ingresos)}</div><div className="k-sub">{filtrados.filter((m) => m.tipo === 'ingreso').length} movimientos</div></div>}
-            {tipo !== 'ingreso' && <div className="kpi"><div className="k-label">📤 Egresos</div><div className="k-valor rojo-t">{money(egresos)}</div><div className="k-sub">{filtrados.filter((m) => m.tipo === 'egreso').length} movimientos</div></div>}
+          <div className="kpis" style={{ marginTop: 12 }}>
+            {tarjeta('ventas', 'venta', tVentas, 'verde-t')}
+            {tarjeta('otros', 'otro_ingreso', tOtros, 'azul-t')}
+            {tarjeta('gastos', 'gasto', tGastos, 'rojo-t')}
+            {tarjeta('cadetes', 'cadete', tCadetes, 'ambar-t')}
           </div>
-
-          {verSaldos && (
-            <div className="tarjeta">
-              <h2>{cuenta === 'todas' ? '🏦 Saldo de la caja' : `${iconoCuenta(cuenta)} Saldo ${nombreCuenta(cuenta)}`}</h2>
-              <div className="conciliacion">
-                <div>Al empezar<b>{money(saldoIni)}</b></div>
-                <span>+</span>
-                <div>Neto<b className={ingresos - egresos >= 0 ? 'verde-t' : 'rojo-t'}>{money(ingresos - egresos)}</b></div>
-                <span>=</span>
+          <div className="tarjeta resultado-caja">
+            <div className="resumen-linea"><span>📥 Ingresos (ventas + otros)</span><b className="mono verde-t">{money(tVentas + tOtros)}</b></div>
+            <div className="resumen-linea"><span>📤 Egresos (gastos + cadetes)</span><b className="mono rojo-t">−{money(tGastos + tCadetes)}</b></div>
+            <div className="resumen-linea total"><span>Resultado</span><span className={`mono ${tVentas + tOtros - tGastos - tCadetes >= 0 ? 'verde-t' : 'rojo-t'}`}>{money(tVentas + tOtros - tGastos - tCadetes)}</span></div>
+            {verSaldos && (
+              <div className="conciliacion" style={{ marginTop: 12 }}>
+                <div>{cuenta === 'todas' ? 'Caja' : nombreCuenta(cuenta)} al empezar<b>{money(saldoIni)}</b></div>
+                <span>→</span>
                 <div>{datos.jornadas[datos.jornadas.length - 1]?.abierta ? 'Ahora' : 'Al cierre'}<b>{money(saldoFin)}</b></div>
               </div>
-            </div>
+            )}
+          </div>
+
+          <div className="campo-label">Ver</div>
+          <Chips valor={grupo} onCambio={(g) => { setVista(g); setConcepto('todos'); }} opciones={[{ id: 'todo', label: 'Todo' }, { id: 'ingresos', label: '📥 Ingresos' }, { id: 'egresos', label: '📤 Egresos' }]} />
+          {grupo === 'ingresos' && (
+            <div style={{ marginTop: 8 }}><Chips chico valor={vista} onCambio={(v) => { setVista(v); setConcepto('todos'); }} opciones={[{ id: 'ingresos', label: 'Todos los ingresos' }, { id: 'ventas', label: '🍕 Solo ventas' }, { id: 'otros', label: '💵 Solo otros ingresos' }]} /></div>
+          )}
+          {grupo === 'egresos' && (
+            <div style={{ marginTop: 8 }}><Chips chico valor={vista} onCambio={(v) => { setVista(v); setConcepto('todos'); }} opciones={[{ id: 'egresos', label: 'Todos los egresos' }, { id: 'gastos', label: '🧾 Solo gastos' }, { id: 'cadetes', label: '🛵 Solo cadetes' }]} /></div>
+          )}
+          <div className="filtros-caja" style={{ marginTop: 10 }}>
+            <select value={concepto} onChange={(e) => setConcepto(e.target.value)}>
+              <option value="todos">Todos los conceptos</option>
+              {conceptos.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input placeholder="🔎 Buscar detalle…" value={buscar} onChange={(e) => setBuscar(e.target.value)} />
+          </div>
+          {vista === 'todo' && (
+            <label className="check" style={{ paddingTop: 0 }}>
+              <input type="checkbox" checked={verInternos} onChange={(e) => setVerInternos(e.target.checked)} />
+              <span className="chico-t">Mostrar internos (vueltos al cadete y pases entre cuentas)</span>
+            </label>
           )}
 
           <div className="descargas">
@@ -214,13 +249,13 @@ function Movimientos() {
             <button className="btn borde" disabled={bajando} onClick={bajarPDF}>📄 PDF con logo</button>
           </div>
 
-          {(conceptosIng.length > 0 || conceptosEgr.length > 0) && (
+          {(resumenIng.length > 0 || resumenEgr.length > 0) && (
             <div className="tarjeta">
-              <h2>📋 Resumen por concepto</h2>
-              {conceptosIng.length > 0 && <div className="campo-label">Ingresos</div>}
-              {conceptosIng.map((c) => <Barra key={'i' + c.nombre} texto={`${c.nombre} (${c.n})`} valor={c.total} max={conceptosIng[0].total} sub={money(c.total)} />)}
-              {conceptosEgr.length > 0 && <div className="campo-label" style={{ marginTop: 6 }}>Egresos</div>}
-              {conceptosEgr.map((c) => <Barra key={'e' + c.nombre} texto={`${c.nombre} (${c.n})`} valor={c.total} max={conceptosEgr[0].total} sub={money(c.total)} />)}
+              <h2>📋 Por concepto</h2>
+              {resumenIng.length > 0 && <div className="campo-label">📥 Ingresos</div>}
+              {resumenIng.map((c) => <Barra key={'i' + c.nombre} texto={`${c.nombre} (${c.n})`} valor={c.total} max={resumenIng[0].total} sub={money(c.total)} />)}
+              {resumenEgr.length > 0 && <div className="campo-label" style={{ marginTop: 6 }}>📤 Egresos</div>}
+              {resumenEgr.map((c) => <Barra key={'e' + c.nombre} texto={`${c.nombre} (${c.n})`} valor={c.total} max={resumenEgr[0].total} sub={money(c.total)} />)}
             </div>
           )}
 
@@ -229,12 +264,12 @@ function Movimientos() {
             const egr = ms.filter((m) => m.tipo === 'egreso').reduce((a, m) => a + Number(m.monto), 0);
             return (
               <div key={f}>
-                <div className="dia-cab">{f ? fechaLarga(f) : 'Sin fecha'} <span><span className="verde-t">+{money(ing)}</span> · <span className="rojo-t">−{money(egr)}</span></span></div>
+                <div className="dia-cab">{fechaLarga(f) || 'Sin fecha'} <span>{ing > 0 && <span className="verde-t">+{money(ing)}</span>}{ing > 0 && egr > 0 && ' · '}{egr > 0 && <span className="rojo-t">−{money(egr)}</span>}</span></div>
                 <div className="lista">
                   {ms.map((m) => (
-                    <div key={m.id} className={m.comanda_id ? 'item clic' : 'item'} onClick={() => m.comanda_id && router.push(`/comanda/${m.comanda_id}`)}>
+                    <div key={m.id} className="item clic" onClick={() => setSel(m)}>
                       <div className="item-cuerpo">
-                        <div className="item-titulo">{m.concepto}{INTERNOS.includes(m.concepto) && <span className="badge b-gris" style={{ marginLeft: 6 }}>interno</span>}</div>
+                        <div className="item-titulo"><span className={`badge ${CATEGORIAS[m.cat].clase}`} style={{ marginRight: 6 }}>{CATEGORIAS[m.cat].icono} {CATEGORIAS[m.cat].nombre}</span>{m.concepto !== 'Venta' && m.concepto}</div>
                         <div className="item-sub">{hora(m.created_at)} · {iconoCuenta(m.cuenta)} {nombreCuenta(m.cuenta)}{m.detalle ? ` · ${m.detalle}` : ''}</div>
                       </div>
                       <div className={`item-der mono ${m.tipo === 'ingreso' ? 'verde-t' : 'rojo-t'}`}>{m.tipo === 'ingreso' ? '+' : '−'}{money(m.monto)}</div>
@@ -246,6 +281,32 @@ function Movimientos() {
           })}
         </>
       )}
+
+      <Hoja abierta={!!sel} titulo={sel ? `${sel.tipo === 'ingreso' ? 'Ingreso' : 'Egreso'} · ${money(sel.monto)}` : ''} onCerrar={() => setSel(null)}
+        pie={sel && (esManual(sel) ? (
+          <button className="btn peligro bloque" onClick={() => pedirEliminar(sel)}>🗑 Eliminar {sel.tipo === 'ingreso' ? 'ingreso' : 'egreso'}</button>
+        ) : sel.comanda_id ? (
+          <button className="btn borde bloque" onClick={() => router.push(`/comanda/${sel.comanda_id}`)}>🧾 Ir a la comanda</button>
+        ) : (
+          <button className="btn borde bloque" onClick={() => router.push('/cadete')}>🛵 Ir a Cadete</button>
+        ))}>
+        {sel && (
+          <>
+            <div className="resumen-linea"><span>Categoría</span><span className={`badge ${CATEGORIAS[sel.cat].clase}`}>{CATEGORIAS[sel.cat].icono} {CATEGORIAS[sel.cat].nombre}</span></div>
+            <div className="resumen-linea"><span>Concepto</span><b>{sel.concepto}</b></div>
+            {sel.detalle && <div className="resumen-linea"><span>Detalle</span><span>{sel.detalle}</span></div>}
+            <div className="resumen-linea"><span>Cuenta</span><span>{iconoCuenta(sel.cuenta)} {nombreCuenta(sel.cuenta)}</span></div>
+            <div className="resumen-linea"><span>Fecha</span><span>{fechaHora(sel.created_at)}</span></div>
+            <div className="resumen-linea total"><span>Monto</span><span className={`mono ${sel.tipo === 'ingreso' ? 'verde-t' : 'rojo-t'}`}>{sel.tipo === 'ingreso' ? '+' : '−'}{money(sel.monto)}</span></div>
+            {!esManual(sel) && (
+              <div className="aviso azul" style={{ marginTop: 10 }}>
+                {sel.comanda_id ? 'Este movimiento lo generó una comanda. Para corregirlo andá a la comanda (deshacer cobro, anular o eliminar).' : 'Es un pago a cadete. Para corregirlo eliminá la liquidación desde Cadete.'}
+              </div>
+            )}
+          </>
+        )}
+      </Hoja>
+      <Confirmar datos={confirmar} onCerrar={() => setConfirmar(null)} />
     </>
   );
 }

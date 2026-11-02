@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { supabase, rpc, traerTodo } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio } from '@/components/ui';
-import { money, num, hora, fechaHora, CUENTAS, nombreCuenta, iconoCuenta, linkWhatsapp } from '@/lib/utils';
+import { money, num, hora, fechaHora, CUENTAS, nombreCuenta, iconoCuenta, linkWhatsapp, depurarMovimientos, categoriaMov, CATEGORIAS } from '@/lib/utils';
 
 const fechaLarga = (f) => new Date(f + 'T12:00').toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' });
 
@@ -136,10 +136,13 @@ export default function Caja() {
     setTrabajando(false);
   }
 
+  // la lista de hoy sin los cobros deshechos/anulados (errores corregidos)
+  const movsVer = depurarMovimientos(movs);
+
   async function borrarMov() {
     try {
       await rpc('eliminar_movimiento', { p_id: movBorrar.id });
-      avisar('Movimiento borrado');
+      avisar('Movimiento eliminado ✔');
       setMovBorrar(null);
       await cargar();
     } catch (e) { avisar(e.message, 'error'); }
@@ -251,17 +254,18 @@ export default function Caja() {
       </div>
       {movs.length === 0 ? <Vacio texto="Sin movimientos todavía" /> : (
         <div className="lista">
-          {movs.slice(0, 10).map((m) => (
-            <div key={m.id} className="item clic" onClick={() => !m.comanda_id && !m.liquidacion_id && setMovBorrar(m)}>
+          {movsVer.slice(0, 12).map((m) => { const cat = CATEGORIAS[categoriaMov(m)]; return (
+            <div key={m.id} className="item clic" onClick={() => (m.comanda_id ? router.push(`/comanda/${m.comanda_id}`) : m.liquidacion_id ? router.push('/cadete') : setMovBorrar(m))}>
               <div className="item-cuerpo">
-                <div className="item-titulo">{m.concepto}</div>
+                <div className="item-titulo"><span className={`badge ${cat.clase}`} style={{ marginRight: 6 }}>{cat.icono} {cat.nombre}</span>{m.concepto !== 'Venta' && m.concepto}</div>
                 <div className="item-sub">{hora(m.created_at)} · {iconoCuenta(m.cuenta)} {nombreCuenta(m.cuenta)}{m.detalle ? ` · ${m.detalle}` : ''}</div>
               </div>
               <div className={`item-der mono ${m.tipo === 'ingreso' ? 'verde-t' : 'rojo-t'}`}>{m.tipo === 'ingreso' ? '+' : '−'}{money(m.monto)}</div>
             </div>
-          ))}
+          ); })}
         </div>
       )}
+      {movsVer.length > 0 && <p className="suave chico-t centro">Tocá un gasto o ingreso cargado a mano para eliminarlo. Las ventas se corrigen desde su comanda.</p>}
 
       <div className="seccion-titulo">Cierres anteriores</div>
       {historial.length === 0 ? <Vacio texto="Todavía no hay cierres" /> : (
@@ -320,9 +324,17 @@ export default function Caja() {
       </Hoja>
 
       {/* BORRAR */}
-      <Hoja abierta={!!movBorrar} titulo="Movimiento" onCerrar={() => setMovBorrar(null)}
-        pie={<button className="btn peligro bloque" onClick={borrarMov}>Borrar movimiento</button>}>
-        {movBorrar && <><div className="item-titulo">{movBorrar.concepto} · {money(movBorrar.monto)}</div><div className="suave">{nombreCuenta(movBorrar.cuenta)} {movBorrar.detalle ? '· ' + movBorrar.detalle : ''}</div></>}
+      <Hoja abierta={!!movBorrar} titulo={movBorrar ? `${movBorrar.tipo === 'ingreso' ? 'Ingreso' : 'Egreso'} · ${money(movBorrar.monto)}` : ''} onCerrar={() => setMovBorrar(null)}
+        pie={<button className="btn peligro bloque" onClick={borrarMov}>🗑 Eliminar {movBorrar?.tipo === 'ingreso' ? 'ingreso' : 'egreso'}</button>}>
+        {movBorrar && (
+          <>
+            <div className="resumen-linea"><span>Concepto</span><b>{movBorrar.concepto}</b></div>
+            {movBorrar.detalle && <div className="resumen-linea"><span>Detalle</span><span>{movBorrar.detalle}</span></div>}
+            <div className="resumen-linea"><span>Cuenta</span><span>{iconoCuenta(movBorrar.cuenta)} {nombreCuenta(movBorrar.cuenta)}</span></div>
+            <div className="resumen-linea"><span>Hora</span><span>{hora(movBorrar.created_at)}</span></div>
+            {movBorrar.concepto === 'Movimiento entre cuentas' && <div className="aviso azul" style={{ marginTop: 8 }}>Se borran las dos partes del pase entre cuentas.</div>}
+          </>
+        )}
       </Hoja>
 
       {/* HISTORIAL */}

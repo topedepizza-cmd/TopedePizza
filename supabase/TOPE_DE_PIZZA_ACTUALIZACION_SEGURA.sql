@@ -1137,6 +1137,54 @@ exception when undefined_object then
   raise notice 'roles no encontrados (entorno de prueba)';
 end $$;
 
+
+-- =====================================================================
+--  ACTUALIZACIÓN 3 (nov/2026): eliminar ingresos y egresos cargados a mano
+--  de cualquier día. Si la caja de ese día ya estaba cerrada, corrige los
+--  saldos de ese cierre y de los días siguientes. NO borra otros datos.
+-- =====================================================================
+create or replace function public.eliminar_movimiento(p_id bigint) returns void
+language plpgsql set search_path = public as $$
+declare m record; v record; v_delta numeric;
+begin
+  select * into m from movimientos where id = p_id;
+  if not found then return; end if;
+  if m.comanda_id is not null then
+    raise exception 'Este movimiento es de una comanda: corregilo desde la comanda (deshacer cobro, anular o eliminar).';
+  end if;
+  if m.liquidacion_id is not null then
+    raise exception 'Este movimiento es un pago a cadete: corregilo desde Cadete (eliminar la liquidación).';
+  end if;
+
+  -- un "movimiento entre cuentas" son 2 registros: borro los dos
+  for v in
+    select * from movimientos x
+    where x.id = m.id
+       or (m.concepto = 'Movimiento entre cuentas' and x.concepto = 'Movimiento entre cuentas'
+           and x.jornada_id = m.jornada_id and x.monto = m.monto and x.tipo <> m.tipo
+           and abs(extract(epoch from (x.created_at - m.created_at))) < 5
+           and x.id = (select y.id from movimientos y
+                       where y.concepto = 'Movimiento entre cuentas' and y.jornada_id = m.jornada_id
+                         and y.monto = m.monto and y.tipo <> m.tipo
+                         and abs(extract(epoch from (y.created_at - m.created_at))) < 5
+                       order by abs(y.id - m.id) limit 1))
+  loop
+    delete from movimientos where id = v.id;
+    -- si la caja de ese día ya cerró, arrastro la diferencia al cierre y a los días siguientes
+    v_delta := case when v.tipo = 'ingreso' then -v.monto else v.monto end;
+    if exists (select 1 from jornadas where id = v.jornada_id and not abierta) then
+      execute format('update jornadas set sf_%1$s = coalesce(sf_%1$s, 0) + $1 where id = $2', v.cuenta) using v_delta, v.jornada_id;
+      execute format('update jornadas set si_%1$s = si_%1$s + $1, sf_%1$s = case when sf_%1$s is null then null else sf_%1$s + $1 end where id > $2', v.cuenta)
+        using v_delta, v.jornada_id;
+    end if;
+  end loop;
+end $$;
+revoke execute on function public.eliminar_movimiento(bigint) from public;
+do $$ begin
+  revoke execute on function public.eliminar_movimiento(bigint) from anon;
+  grant execute on function public.eliminar_movimiento(bigint) to authenticated;
+exception when undefined_object then null; end $$;
+
 -- =====================================================================
 -- LISTO ✅  No se borró nada. Entrá como siempre.
 -- =====================================================================

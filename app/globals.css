@@ -302,3 +302,9 @@ hr.sep { border: 0; border-top: 1px solid var(--borde); margin: 14px 0; }
 .saldo-flecha { color: var(--suave); font-size: 18px; margin-left: 4px; }
 .conciliacion { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: 4px; text-align: center; font-size: 12px; color: var(--suave); }
 .conciliacion b { display: block; font-size: 15px; color: var(--texto); font-family: var(--titulo); }
+.azul-t { color: var(--azul); }
+.kpi-btn { text-align: left; font: inherit; color: inherit; cursor: pointer; width: 100%; }
+.kpi-btn:active { transform: scale(0.98); }
+.kpi-btn.elegida { border: 2px solid var(--texto); }
+.kpi-btn .k-valor { font-size: 22px; }
+.resultado-caja .resumen-linea.total { font-size: 20px; }
