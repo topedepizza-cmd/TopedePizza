@@ -3,14 +3,15 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from './AppShell';
-import { Hoja, Chips, Confirmar, MapaDireccion } from './ui';
-import { money, cant, fechaHora, nombreCuenta, iconoCuenta, CUENTAS, textoComanda, linkWhatsapp, linkMapa, armarMensaje } from '@/lib/utils';
+import { Hoja, Chips, Campo, Confirmar, MapaDireccion } from './ui';
+import { money, num, cant, fechaHora, nombreCuenta, iconoCuenta, FORMAS_PAGO, partesPago, textoComanda, linkWhatsapp, linkMapa, armarMensaje } from '@/lib/utils';
 
 export default function VistaComanda({ comanda: c, items, cadete, recargar, recienCreada }) {
   const { config, avisar } = useApp();
   const router = useRouter();
   const [hojaCobro, setHojaCobro] = useState(false);
   const [forma, setForma] = useState(c.forma_pago);
+  const [efCobro, setEfCobro] = useState('');
   const [trabajando, setTrabajando] = useState(false);
   const [confirmar, setConfirmar] = useState(null);
   const [enviados, setEnviados] = useState({});
@@ -34,20 +35,27 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
   const alias = config?.alias_pago || '';
   const titular = config?.titular_pago || '';
   const pagada = c.estado === 'cobrada';
+  const pp = partesPago(c);
   const efectivo = c.forma_pago === 'efectivo';
-  const vuelto = Number(c.paga_con) > Number(c.total) ? `(abonás con ${money(c.paga_con)}, te llevamos ${money(Number(c.paga_con) - Number(c.total))} de vuelto)` : '';
+  const mixto = c.forma_pago === 'mixto';
+  const vuelto = Number(c.paga_con) > pp.efectivo && pp.efectivo > 0 ? `(abonás con ${money(c.paga_con)}, te llevamos ${money(Number(c.paga_con) - pp.efectivo)} de vuelto)` : '';
+  const lineaAlias = [alias ? `🏦 Alias: *${alias}*` : '', titular ? `👤 A nombre de: ${titular}` : ''].filter(Boolean).join('\n');
   // bloque de pago del mensaje de confirmación
   const pagoConfirmacion = pagada
     ? `💰 Total: ${money(c.total)} — ✅ ya está pago, ¡gracias!`
-    : efectivo
-      ? [`💵 *Total a abonar en efectivo: ${money(c.total)}*`, vuelto, alias ? `💳 Si preferís Mercado Pago: alias *${alias}*${titular ? ` (a nombre de ${titular})` : ''}` : ''].filter(Boolean).join('\n')
-      : [`📱 *Total a transferir por Mercado Pago: ${money(c.total)}*`, alias ? `🏦 Alias: *${alias}*` : '', titular ? `👤 A nombre de: ${titular}` : '', '(mandanos el comprobante por acá 🙌)'].filter(Boolean).join('\n');
+    : mixto
+      ? [`💰 *Total: ${money(c.total)}*`, `💵 En efectivo: *${money(pp.efectivo)}*`, vuelto, `📱 Por Mercado Pago: *${money(pp.mercadopago)}*`, lineaAlias, '(mandanos el comprobante por acá 🙌)'].filter(Boolean).join('\n')
+      : efectivo
+        ? [`💵 *Total a abonar en efectivo: ${money(c.total)}*`, vuelto, alias ? `💳 Si preferís Mercado Pago: alias *${alias}*${titular ? ` (a nombre de ${titular})` : ''}` : ''].filter(Boolean).join('\n')
+        : [`📱 *Total a transferir por Mercado Pago: ${money(c.total)}*`, lineaAlias, '(mandanos el comprobante por acá 🙌)'].filter(Boolean).join('\n');
   // bloque de pago del mensaje "salió": si ya pagó no dice nada
   const pagoSalio = pagada
     ? ''
-    : efectivo
-      ? [`💵 Tené listo el efectivo: *${money(c.total)}*`, vuelto ? `(el cadete lleva vuelto para ${money(c.paga_con)})` : ''].filter(Boolean).join('\n')
-      : `📱 Si todavía no transferiste: *${money(c.total)}*${alias ? ` al alias *${alias}*` : ''}`;
+    : mixto
+      ? [`💵 Tené listo el efectivo: *${money(pp.efectivo)}*`, `📱 y por Mercado Pago: *${money(pp.mercadopago)}*${alias ? ` al alias *${alias}*` : ''}`].join('\n')
+      : efectivo
+        ? [`💵 Tené listo el efectivo: *${money(c.total)}*`, vuelto ? `(el cadete lleva vuelto para ${money(c.paga_con)})` : ''].filter(Boolean).join('\n')
+        : `📱 Si todavía no transferiste: *${money(c.total)}*${alias ? ` al alias *${alias}*` : ''}`;
   const base = { cliente: (c.cliente_nombre || '').split(' ')[0], numero: c.numero, total: money(c.total), detalle, alias, titular };
   const msjConfirmacion = armarMensaje(config?.mensaje_confirmacion || '¡Hola {cliente}! 🍕 Recibimos tu pedido en *Tope de Pizza*\n\n{detalle}\n\n{pago}\n\n🛵 Te avisamos cuando tu pedido salga. ¡Gracias!', { ...base, pago: pagoConfirmacion });
   const msjSalio = c.tipo_entrega === 'retiro'
@@ -71,7 +79,15 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
     const { error } = await supabase.from('comandas').update({ estado_entrega: estado }).eq('id', c.id);
     if (error) throw error;
   }, 'Estado actualizado');
-  const cobrar = () => accion(async () => { await rpc('cobrar_comanda', { p_id: c.id, p_forma: forma }); setHojaCobro(false); }, 'Comanda cobrada ✔');
+  const cobrar = () => {
+    if (forma === 'mixto' && (num(efCobro) <= 0 || num(efCobro) >= Number(c.total))) {
+      avisar('Poné cuánto pagó en efectivo (menos que el total)', 'error'); return;
+    }
+    accion(async () => {
+      await rpc('cobrar_comanda', { p_id: c.id, p_forma: forma, p_efectivo: forma === 'mixto' ? num(efCobro) : null });
+      setHojaCobro(false);
+    }, 'Comanda cobrada ✔');
+  };
   const reabrir = () => setConfirmar({
     titulo: '¿Deshacer el cobro?', mensaje: 'Se descuenta de la caja y la comanda vuelve a “sin cobrar”.', boton: 'Deshacer cobro',
     onOk: () => accion(() => rpc('reabrir_comanda', { p_id: c.id }), 'Cobro deshecho'),
@@ -96,7 +112,9 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
     try { await navigator.clipboard.writeText(texto); avisar('Copiado ✔'); } catch { avisar('No se pudo copiar', 'error'); }
   }
 
-  const rendir = Number(c.total) + Number(c.vuelto_registrado || 0);
+  // efectivo que entra al cobrar según la forma elegida en la hoja de cobro
+  const efectivoCobro = forma === 'efectivo' ? Number(c.total) : forma === 'mixto' ? Math.min(num(efCobro), Number(c.total)) : 0;
+  const rendir = efectivoCobro + Number(c.vuelto_registrado || 0);
 
   return (
     <>
@@ -134,7 +152,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
           ) : <div className="aviso" style={{ marginTop: 6 }}>Falta la dirección: cargala con ✏️ Editar antes de mandarla al cadete.</div>
         ) : <div className="item-sub">🏠 Retira en el local</div>}
         {c.cliente_telefono && <a className="item-sub" style={{ display: 'block', marginTop: 4 }} href={`tel:${c.cliente_telefono}`}>📞 {c.cliente_telefono}</a>}
-        {c.tipo_entrega === 'delivery' && <div className="item-sub" style={{ marginTop: 4 }}>🛵 {cadete?.nombre || 'Sin cadete'}</div>}
+        {c.tipo_entrega === 'delivery' && <div className="item-sub" style={{ marginTop: 4 }}>{cadete?.nombre ? `🛵 ${cadete.nombre}` : '🙋 Lo llevamos nosotros'}</div>}
       </div>
 
       {c.estado !== 'anulada' && (
@@ -160,7 +178,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
               <a className={`paso-msj${enviados.salio || c.estado_entrega !== 'preparando' ? ' hecho' : ''}`} href={linkWhatsapp(telCliente, msjSalio)} target="_blank" rel="noreferrer"
                 onClick={() => { setEnviados({ ...enviados, salio: true }); marcarEnCamino(); }}>
                 <span className="paso-n">{enviados.salio || c.estado_entrega !== 'preparando' ? '✔' : '3'}</span>
-                <span><b>{c.tipo_entrega === 'delivery' ? '🛵 Salió: avisar al cliente' : 'Avisar que está listo para retirar'}</b><small>{c.tipo_entrega === 'delivery' ? `Tocalo cuando el cadete sale${pagada ? '' : efectivo ? ' · le recuerda el efectivo' : ''}. Pasa a “En camino”.` : 'Le llega que ya puede pasar a buscarlo'}</small></span>
+                <span><b>{c.tipo_entrega === 'delivery' ? '🛵 Salió: avisar al cliente' : 'Avisar que está listo para retirar'}</b><small>{c.tipo_entrega === 'delivery' ? `Tocalo cuando el cadete sale${pagada ? '' : (efectivo || mixto) ? ' · le recuerda el efectivo' : ''}. Pasa a “En camino”.` : 'Le llega que ya puede pasar a buscarlo'}</small></span>
               </a>
             )}
             {!telCliente && c.tipo_entrega === 'delivery' && c.estado_entrega === 'preparando' && (
@@ -178,7 +196,7 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
         {Number(c.envio) > 0 && <div className="resumen-linea suave"><span>Envío</span><span className="mono">{money(c.envio)}</span></div>}
         {Number(c.descuento) > 0 && <div className="resumen-linea suave"><span>Descuento</span><span className="mono">-{money(c.descuento)}</span></div>}
         <div className="resumen-linea total"><span>Total</span><span className="mono">{money(c.total)}</span></div>
-        <div className="resumen-linea suave chico-t"><span>{iconoCuenta(c.forma_pago)} {nombreCuenta(c.forma_pago)}{Number(c.paga_con) > 0 ? ` · paga con ${money(c.paga_con)}` : ''}</span>
+        <div className="resumen-linea suave chico-t"><span>{iconoCuenta(c.forma_pago)} {mixto ? `Mixto: ${money(pp.efectivo)} efectivo + ${money(pp.mercadopago)} MP` : nombreCuenta(c.forma_pago)}{Number(c.paga_con) > 0 ? ` · paga con ${money(c.paga_con)}` : ''}</span>
           {Number(c.vuelto) > 0 && <span>Vuelto {money(c.vuelto)}</span>}</div>
         {c.notas && <div className="aviso" style={{ marginTop: 10, marginBottom: 0 }}>📝 {c.notas}</div>}
       </div>
@@ -197,8 +215,8 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
 
       {c.estado === 'abierta' && (
         <>
-          <button className="btn primario bloque grande" style={{ marginBottom: 10 }} onClick={() => { setForma(c.forma_pago); setHojaCobro(true); }}>
-            💰 Cobrar {c.forma_pago === 'efectivo' && c.tipo_entrega === 'delivery' ? '/ rendición cadete' : ''}
+          <button className="btn primario bloque grande" style={{ marginBottom: 10 }} onClick={() => { setForma(c.forma_pago); setEfCobro(c.monto_efectivo ? String(Number(c.monto_efectivo)) : ''); setHojaCobro(true); }}>
+            💰 Cobrar {(efectivo || mixto) && c.tipo_entrega === 'delivery' ? '/ rendición cadete' : ''}
           </button>
           <div className="fila-btns">
             <button className="btn borde" onClick={() => router.push(`/comanda/${c.id}?editar=1`)}>✏️ Editar</button>
@@ -227,16 +245,28 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
       <Hoja abierta={hojaCobro} titulo={`Cobrar #${c.numero}`} onCerrar={() => setHojaCobro(false)}
         pie={<button className="btn verde bloque" disabled={trabajando} onClick={cobrar}>Confirmar cobro de {money(c.total)}</button>}>
         <div className="campo-label">¿Cómo pagó?</div>
-        <Chips valor={forma} onCambio={setForma} opciones={CUENTAS.map((x) => ({ id: x.id, label: `${x.icono} ${x.nombre}` }))} />
+        <Chips valor={forma} onCambio={setForma} opciones={FORMAS_PAGO.map((x) => ({ id: x.id, label: `${x.icono} ${x.nombre}` }))} />
+        {forma === 'mixto' && (
+          <div className="grid2" style={{ marginTop: 12 }}>
+            <Campo label="💵 Pagó en efectivo"><input inputMode="numeric" placeholder="$" value={efCobro} onChange={(e) => setEfCobro(e.target.value)} autoFocus /></Campo>
+            <Campo label="📱 Por Mercado Pago"><input disabled value={num(efCobro) > 0 ? money(Math.max(Number(c.total) - num(efCobro), 0)) : '—'} /></Campo>
+          </div>
+        )}
         <div className="tarjeta" style={{ marginTop: 14 }}>
           <div className="resumen-linea"><span>Total comanda</span><b className="mono">{money(c.total)}</b></div>
+          {forma === 'mixto' && num(efCobro) > 0 && (
+            <>
+              <div className="resumen-linea suave"><span>💵 Efectivo</span><span className="mono">{money(efectivoCobro)}</span></div>
+              <div className="resumen-linea suave"><span>📱 Mercado Pago</span><span className="mono">{money(Number(c.total) - efectivoCobro)}</span></div>
+            </>
+          )}
           {Number(c.vuelto_registrado) > 0 && <div className="resumen-linea"><span>+ Vuelto que se llevó</span><b className="mono">{money(c.vuelto_registrado)}</b></div>}
-          {Number(c.vuelto_registrado) > 0 && (
-            <div className="resumen-linea total"><span>El cadete rinde en efectivo</span><span className="mono">{money(forma === 'efectivo' ? rendir : c.vuelto_registrado)}</span></div>
+          {(Number(c.vuelto_registrado) > 0 || (forma === 'mixto' && c.tipo_entrega === 'delivery')) && rendir > 0 && (
+            <div className="resumen-linea total"><span>El cadete rinde en efectivo</span><span className="mono">{money(rendir)}</span></div>
           )}
         </div>
-        {forma !== 'efectivo' && Number(c.vuelto_registrado) > 0 && (
-          <div className="aviso">Pagó por {nombreCuenta(forma)}: el cadete solo te devuelve el vuelto ({money(c.vuelto_registrado)}).</div>
+        {forma === 'mercadopago' && Number(c.vuelto_registrado) > 0 && (
+          <div className="aviso">Pagó todo por Mercado Pago: el cadete solo te devuelve el vuelto ({money(c.vuelto_registrado)}).</div>
         )}
       </Hoja>
     </>

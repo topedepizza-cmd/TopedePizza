@@ -848,6 +848,295 @@ end $$;
 revoke execute on function public.eliminar_comanda(bigint) from public;
 grant execute on function public.eliminar_comanda(bigint) to authenticated;
 
+
+-- =====================================================================
+--  ACTUALIZACIÓN 2 (nov/2026): cobro mixto, eliminar y unir liquidaciones,
+--  viajes que no se liquidan (los llevan los socios). NO borra datos.
+-- =====================================================================
+alter table public.comandas add column if not exists monto_efectivo numeric;
+alter table public.comandas add column if not exists no_liquidar boolean not null default false;
+
+-- reparte el cobro de una comanda entre efectivo y Mercado Pago
+create or replace function public.partes_pago(p_forma text, p_total numeric, p_efectivo numeric)
+returns table (cuenta text, monto numeric) language sql immutable as $$
+  select x.cuenta, x.monto from (
+    select 'efectivo'::text as cuenta,
+           case when p_forma = 'mixto' then least(greatest(coalesce(p_efectivo, 0), 0), p_total)
+                when p_forma = 'efectivo' then p_total else 0 end as monto
+    union all
+    select 'mercadopago'::text,
+           case when p_forma = 'mixto' then p_total - least(greatest(coalesce(p_efectivo, 0), 0), p_total)
+                when p_forma in ('mercadopago', 'transferencia') then p_total else 0 end
+  ) x where x.monto > 0
+$$;
+
+-- cobrar (ahora acepta cobro mixto)
+drop function if exists public.cobrar_comanda(bigint, text);
+create or replace function public.cobrar_comanda(p_id bigint, p_forma text default null, p_efectivo numeric default null) returns void
+language plpgsql set search_path = public as $$
+declare c comandas; v_j bigint; v_forma text; v_ef numeric; pp record;
+begin
+  select * into c from comandas where id = p_id for update;
+  if not found then raise exception 'Comanda inexistente'; end if;
+  if c.estado <> 'abierta' then raise exception 'La comanda ya está %', c.estado; end if;
+  v_forma := coalesce(nullif(p_forma, ''), c.forma_pago, 'efectivo');
+  v_ef := case when v_forma = 'mixto' then coalesce(p_efectivo, c.monto_efectivo, 0) end;
+  if v_forma = 'mixto' and v_ef <= 0 then v_forma := 'mercadopago'; v_ef := null; end if;
+  if v_forma = 'mixto' and v_ef >= c.total then v_forma := 'efectivo'; v_ef := null; end if;
+  select id into v_j from jornada_actual();
+  for pp in select * from partes_pago(v_forma, c.total, v_ef) loop
+    insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
+    values (v_j, 'ingreso', pp.cuenta, pp.monto, 'Venta', 'Comanda #' || c.numero || coalesce(' - ' || c.cliente_nombre, ''), c.id);
+  end loop;
+  if c.vuelto_registrado > 0 then
+    insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
+    values (v_j, 'ingreso', 'efectivo', c.vuelto_registrado, 'Devolución vuelto cadete', 'Comanda #' || c.numero, c.id);
+  end if;
+  update comandas set estado = 'cobrada', forma_pago = v_forma, monto_efectivo = v_ef, cobrada_at = now(),
+         cobrada_jornada_id = v_j, estado_entrega = 'entregada'
+  where id = p_id;
+end $$;
+
+create or replace function public.reabrir_comanda(p_id bigint) returns void
+language plpgsql set search_path = public as $$
+declare c comandas; v_j bigint; pp record;
+begin
+  select * into c from comandas where id = p_id for update;
+  if not found then raise exception 'Comanda inexistente'; end if;
+  if c.estado <> 'cobrada' then raise exception 'Solo se puede deshacer el cobro de una comanda cobrada'; end if;
+  select id into v_j from jornada_actual();
+  for pp in select * from partes_pago(c.forma_pago, c.total, c.monto_efectivo) loop
+    insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
+    values (v_j, 'egreso', pp.cuenta, pp.monto, 'Cobro deshecho', 'Comanda #' || c.numero, c.id);
+  end loop;
+  if c.vuelto_registrado > 0 then
+    insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
+    values (v_j, 'egreso', 'efectivo', c.vuelto_registrado, 'Vuelto a cadete', 'Comanda #' || c.numero || ' (cobro deshecho)', c.id);
+  end if;
+  update comandas set estado = 'abierta', cobrada_at = null, cobrada_jornada_id = null where id = p_id;
+end $$;
+
+create or replace function public.anular_comanda(p_id bigint, p_motivo text default null) returns void
+language plpgsql set search_path = public as $$
+declare c comandas; v_j bigint; pp record;
+begin
+  select * into c from comandas where id = p_id for update;
+  if not found then raise exception 'Comanda inexistente'; end if;
+  if c.estado = 'anulada' then return; end if;
+  select id into v_j from jornada_actual();
+  perform stock_items_comanda(c.id, 1, 'Anulación comanda');
+  if c.estado = 'cobrada' then
+    for pp in select * from partes_pago(c.forma_pago, c.total, c.monto_efectivo) loop
+      insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
+      values (v_j, 'egreso', pp.cuenta, pp.monto, 'Anulación venta', 'Comanda #' || c.numero, c.id);
+    end loop;
+  elsif c.estado = 'abierta' and c.vuelto_registrado > 0 then
+    insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
+    values (v_j, 'ingreso', 'efectivo', c.vuelto_registrado, 'Devolución vuelto cadete', 'Comanda anulada #' || c.numero, c.id);
+  end if;
+  update comandas set estado = 'anulada', motivo_anulacion = p_motivo, anulada_at = now() where id = p_id;
+end $$;
+
+-- guardar comanda (con cobro mixto)
+create or replace function public.guardar_comanda(p jsonb) returns bigint
+language plpgsql set search_path = public as $$
+declare
+  v_id      bigint  := nullif(p->>'id', '')::bigint;
+  v_cliente bigint  := nullif(p->>'cliente_id', '')::bigint;
+  v_tipo    text    := coalesce(nullif(p->>'tipo_entrega', ''), 'delivery');
+  v_envio   numeric := coalesce(nullif(p->>'envio', '')::numeric, 0);
+  v_desc    numeric := coalesce(nullif(p->>'descuento', '')::numeric, 0);
+  v_vuelto  numeric := coalesce(nullif(p->>'vuelto', '')::numeric, 0);
+  v_forma   text    := coalesce(nullif(p->>'forma_pago', ''), 'efectivo');
+  v_nombre  text    := nullif(trim(coalesce(p->>'cliente_nombre', '')), '');
+  v_tel     text    := nullif(trim(coalesce(p->>'cliente_telefono', '')), '');
+  v_dir     text    := nullif(trim(coalesce(p->>'cliente_direccion', '')), '');
+  v_ref     text    := nullif(trim(coalesce(p->>'cliente_referencia', '')), '');
+  v_items   jsonb   := coalesce(p->'items', '[]'::jsonb);
+  v_ef      numeric := case when coalesce(p->>'forma_pago', '') = 'mixto' then coalesce(nullif(p->>'monto_efectivo', '')::numeric, 0) end;
+  v_j bigint; v_sub numeric; v_total numeric; v_diff numeric; v_num int; c comandas;
+begin
+  if jsonb_array_length(v_items) = 0 then raise exception 'La comanda no tiene productos'; end if;
+  select id into v_j from jornada_actual();
+  if v_tipo <> 'delivery' then v_envio := 0; end if;
+
+  -- cliente: alta o actualización
+  if coalesce((p->>'guardar_cliente')::boolean, false) and v_nombre is not null then
+    if v_cliente is null then
+      insert into clientes (nombre, telefono, direccion, referencia)
+      values (v_nombre, v_tel, v_dir, v_ref) returning id into v_cliente;
+    else
+      update clientes set nombre = v_nombre, telefono = v_tel, direccion = v_dir, referencia = v_ref where id = v_cliente;
+    end if;
+  end if;
+
+  select coalesce(sum((x->>'cantidad')::numeric * (x->>'precio_unit')::numeric), 0)
+    into v_sub from jsonb_array_elements(v_items) x;
+  v_total := greatest(v_sub + v_envio - v_desc, 0);
+
+  if v_id is null then
+    select coalesce(max(numero), 0) + 1 into v_num from comandas where jornada_id = v_j;
+    insert into comandas (jornada_id, numero, cliente_id, cliente_nombre, cliente_telefono, cliente_direccion,
+                          cliente_referencia, tipo_entrega, cadete_id, envio, subtotal, descuento, total,
+                          forma_pago, monto_efectivo, paga_con, notas)
+    values (v_j, v_num, v_cliente, v_nombre, v_tel, v_dir, v_ref, v_tipo,
+            case when v_tipo = 'delivery' then nullif(p->>'cadete_id', '')::bigint end,
+            v_envio, v_sub, v_desc, v_total, v_forma, v_ef, nullif(p->>'paga_con', '')::numeric, nullif(p->>'notas', ''))
+    returning * into c;
+  else
+    select * into c from comandas where id = v_id for update;
+    if not found then raise exception 'Comanda inexistente'; end if;
+    if c.estado <> 'abierta' then raise exception 'Solo se pueden editar comandas sin cobrar'; end if;
+    perform stock_items_comanda(c.id, 1, 'Edición comanda (devolución)');
+    delete from comanda_items where comanda_id = c.id;
+    update comandas set
+      cliente_id = v_cliente, cliente_nombre = v_nombre, cliente_telefono = v_tel, cliente_direccion = v_dir,
+      cliente_referencia = v_ref, tipo_entrega = v_tipo,
+      cadete_id = case when v_tipo = 'delivery' then nullif(p->>'cadete_id', '')::bigint end,
+      envio = v_envio, subtotal = v_sub, descuento = v_desc, total = v_total, forma_pago = v_forma,
+      monto_efectivo = v_ef, paga_con = nullif(p->>'paga_con', '')::numeric, notas = nullif(p->>'notas', ''), updated_at = now()
+    where id = c.id returning * into c;
+  end if;
+
+  insert into comanda_items (comanda_id, articulo_id, articulo2_id, es_mitad, descripcion, rubro_id, cantidad, precio_unit, subtotal)
+  select c.id,
+         nullif(x->>'articulo_id', '')::bigint,
+         nullif(x->>'articulo2_id', '')::bigint,
+         coalesce((x->>'es_mitad')::boolean, false),
+         coalesce(x->>'descripcion', 'Artículo'),
+         nullif(x->>'rubro_id', '')::bigint,
+         (x->>'cantidad')::numeric,
+         (x->>'precio_unit')::numeric,
+         (x->>'cantidad')::numeric * (x->>'precio_unit')::numeric
+  from jsonb_array_elements(v_items) x;
+
+  perform stock_items_comanda(c.id, -1, 'Venta');
+
+  -- vuelto que se le da al cadete (sale efectivo de caja; vuelve cuando rinde)
+  v_diff := v_vuelto - coalesce(c.vuelto_registrado, 0);
+  if v_diff > 0 then
+    insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
+    values (v_j, 'egreso', 'efectivo', v_diff, 'Vuelto a cadete', 'Comanda #' || c.numero, c.id);
+  elsif v_diff < 0 then
+    insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
+    values (v_j, 'ingreso', 'efectivo', -v_diff, 'Ajuste vuelto cadete', 'Comanda #' || c.numero, c.id);
+  end if;
+  update comandas set vuelto = v_vuelto, vuelto_registrado = v_vuelto where id = c.id;
+
+  if coalesce((p->>'cobrar')::boolean, false) then
+    perform cobrar_comanda(c.id, v_forma, v_ef);
+  end if;
+  return c.id;
+end $$;
+
+-- liquidar: no cuenta los viajes marcados "no liquidar"
+create or replace function public.liquidar_cadete(
+  p_cadete bigint, p_tipo text default 'manual', p_pagar boolean default false,
+  p_cuenta text default 'efectivo', p_basico numeric default null, p_extra numeric default 0,
+  p_hasta timestamptz default null
+) returns bigint
+language plpgsql set search_path = public as $$
+declare v_viajes int; v_envios numeric; v_desde timestamptz; v_hasta timestamptz;
+        v_basico numeric; v_total numeric; v_id bigint; v_j bigint;
+begin
+  v_hasta := coalesce(p_hasta, now());
+  select count(*), coalesce(sum(envio), 0), min(created_at)
+    into v_viajes, v_envios, v_desde
+  from comandas
+  where cadete_id = p_cadete and liquidacion_id is null and estado <> 'anulada' and not no_liquidar
+    and tipo_entrega = 'delivery' and created_at <= v_hasta;
+  if v_viajes = 0 then return null; end if;
+
+  v_basico := coalesce(p_basico, (select basico_cadete from config where id = 1), 0);
+  v_total  := v_envios + v_basico + coalesce(p_extra, 0);
+  select id into v_j from jornadas where abierta limit 1;
+
+  insert into liquidaciones (cadete_id, jornada_id, desde, hasta, viajes, total_envios, basico, extra, total, tipo_cierre)
+  values (p_cadete, v_j, v_desde, v_hasta, v_viajes, v_envios, v_basico, coalesce(p_extra, 0), v_total, p_tipo)
+  returning id into v_id;
+
+  update comandas set liquidacion_id = v_id
+  where cadete_id = p_cadete and liquidacion_id is null and estado <> 'anulada' and not no_liquidar
+    and tipo_entrega = 'delivery' and created_at <= v_hasta;
+
+  if p_pagar then perform pagar_liquidacion(v_id, p_cuenta); end if;
+  return v_id;
+end $$;
+
+create or replace function public.cierre_automatico() returns void
+language plpgsql set search_path = public as $$
+declare v_corte timestamptz := corte_operativo(); c record;
+begin
+  for c in
+    select distinct cadete_id from comandas
+    where cadete_id is not null and liquidacion_id is null and estado <> 'anulada' and not no_liquidar
+      and tipo_entrega = 'delivery' and created_at < v_corte
+  loop
+    perform liquidar_cadete(c.cadete_id, 'auto', false, 'efectivo', null, 0, v_corte - interval '1 second');
+  end loop;
+  if exists (select 1 from jornadas where abierta and fecha < fecha_operativa()) then
+    perform cerrar_jornada('auto');
+  end if;
+end $$;
+
+-- eliminar liquidación (pendiente o pagada)
+--   p_devolver = false: los viajes NO se pagan nunca (ej: los llevaron los socios)
+--   p_devolver = true : los viajes vuelven al turno abierto del cadete
+create or replace function public.eliminar_liquidacion(p_id bigint, p_devolver boolean default false) returns void
+language plpgsql set search_path = public as $$
+declare l liquidaciones; v_j bigint; r record;
+begin
+  select * into l from liquidaciones where id = p_id for update;
+  if not found then return; end if;
+  select id into v_j from jornada_actual();
+  if p_devolver then
+    update comandas set liquidacion_id = null where liquidacion_id = p_id;
+  else
+    update comandas set liquidacion_id = null, no_liquidar = true where liquidacion_id = p_id;
+  end if;
+  -- si estaba pagada: saco el pago de la caja abierta
+  delete from movimientos where liquidacion_id = p_id and jornada_id in (select id from jornadas where abierta);
+  -- si el pago quedó en una caja ya cerrada, lo devuelvo en la caja de hoy
+  for r in
+    select cuenta, sum(case when tipo = 'egreso' then monto else -monto end) as neto
+    from movimientos where liquidacion_id = p_id group by cuenta
+    having sum(case when tipo = 'egreso' then monto else -monto end) <> 0
+  loop
+    insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle)
+    values (v_j, case when r.neto > 0 then 'ingreso' else 'egreso' end, r.cuenta, abs(r.neto),
+            'Ajuste liquidación eliminada', coalesce((select nombre from cadetes where id = l.cadete_id), 'Cadete'));
+  end loop;
+  update movimientos set liquidacion_id = null where liquidacion_id = p_id;
+  delete from liquidaciones where id = p_id;
+end $$;
+
+-- pagar varias liquidaciones pendientes juntas (mismo cadete)
+create or replace function public.pagar_liquidaciones(p_ids bigint[], p_cuenta text default 'efectivo') returns void
+language plpgsql set search_path = public as $$
+declare v_id bigint;
+begin
+  if (select count(distinct cadete_id) from liquidaciones where id = any(p_ids)) > 1 then
+    raise exception 'Elegí liquidaciones de un mismo cadete';
+  end if;
+  foreach v_id in array p_ids loop
+    perform pagar_liquidacion(v_id, p_cuenta);
+  end loop;
+end $$;
+
+do $$
+declare f text;
+begin
+  foreach f in array array['partes_pago(text,numeric,numeric)', 'cobrar_comanda(bigint,text,numeric)',
+    'eliminar_liquidacion(bigint,boolean)', 'pagar_liquidaciones(bigint[],text)']
+  loop
+    execute format('revoke execute on function public.%s from public', f);
+    execute format('revoke execute on function public.%s from anon', f);
+    execute format('grant execute on function public.%s to authenticated', f);
+  end loop;
+exception when undefined_object then
+  raise notice 'roles no encontrados (entorno de prueba)';
+end $$;
+
 -- =====================================================================
 -- LISTO ✅  No se borró nada. Entrá como siempre.
 -- =====================================================================

@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from './AppShell';
 import { Hoja, Chips, Campo, Cargando, Confirmar, MapaDireccion } from './ui';
-import { money, num, cant, CUENTAS, normalizar, cadeteDelDia, DIAS_LARGO, diaSemanaOperativo } from '@/lib/utils';
+import { money, num, cant, FORMAS_PAGO, normalizar, cadeteDelDia, DIAS_LARGO, diaSemanaOperativo } from '@/lib/utils';
 import { interpretarPedido } from '@/lib/voz';
 
 let claveSeq = 1;
@@ -46,11 +46,13 @@ export default function EditorComanda({ comanda, copiaDe, itemsIniciales, client
 
   const [items, setItems] = useState(() => (itemsIniciales || []).map((i) => ({ ...i, key: nuevaClave(), cantidad: Number(i.cantidad), precio_unit: Number(i.precio_unit) })));
   const [tipoEntrega, setTipoEntrega] = useState(base?.tipo_entrega || 'delivery');
-  const [cadeteId, setCadeteId] = useState(base?.cadete_id || null);
+  // 'nos' = lo llevamos nosotros (no cuenta para ningún cadete)
+  const [cadeteId, setCadeteId] = useState(base ? (base.cadete_id || (base.tipo_entrega === 'delivery' ? 'nos' : null)) : null);
   const [envio, setEnvio] = useState(base ? Number(base.envio) : null);
   const [envioOtro, setEnvioOtro] = useState(false);
   const [formaPago, setFormaPago] = useState(base?.forma_pago || 'efectivo');
   const [pagaCon, setPagaCon] = useState(base?.paga_con ? String(base.paga_con) : '');
+  const [montoEfectivo, setMontoEfectivo] = useState(base?.monto_efectivo ? String(Number(base.monto_efectivo)) : '');
   const [vuelto, setVuelto] = useState(base ? String(Number(base.vuelto) || '') : '');
   const [vueltoManual, setVueltoManual] = useState(!!base);
   const [descuento, setDescuento] = useState(base?.descuento ? String(base.descuento) : '');
@@ -167,8 +169,11 @@ export default function EditorComanda({ comanda, copiaDe, itemsIniciales, client
   useEffect(() => {
     if (vueltoManual) return;
     const pc = num(pagaCon);
-    setVuelto(pc > total ? String(pc - total) : '');
-  }, [pagaCon, total, vueltoManual]);
+    const aCobrar = formaPago === 'mixto' ? num(montoEfectivo) : total;
+    setVuelto(pc > aCobrar ? String(pc - aCobrar) : '');
+  }, [pagaCon, total, vueltoManual, formaPago, montoEfectivo]);
+  const efectivoACobrar = formaPago === 'mixto' ? Math.min(num(montoEfectivo), total) : formaPago === 'efectivo' ? total : 0;
+  const conEfectivo = formaPago === 'efectivo' || formaPago === 'mixto';
 
   // ---- voz
   const SR = typeof window !== 'undefined' ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
@@ -216,6 +221,9 @@ export default function EditorComanda({ comanda, copiaDe, itemsIniciales, client
   // ---- guardar
   function guardar(cobrar) {
     if (!items.length) { avisar('Agregá al menos un producto', 'error'); return; }
+    if (formaPago === 'mixto' && (num(montoEfectivo) <= 0 || num(montoEfectivo) >= total)) {
+      avisar('En el pago mixto poné cuánto paga en efectivo (menos que el total)', 'error'); return;
+    }
     if (tipoEntrega === 'delivery' && !cliente.direccion.trim()) {
       setConfirmar({ titulo: 'Falta la dirección', mensaje: 'Es delivery y no cargaste dirección. ¿Guardar igual?', boton: 'Guardar igual', onOk: () => guardarYa(cobrar) });
       return;
@@ -230,10 +238,11 @@ export default function EditorComanda({ comanda, copiaDe, itemsIniciales, client
         id: comanda?.id || null,
         cliente_id: cliente.id, cliente_nombre: cliente.nombre, cliente_telefono: cliente.telefono,
         cliente_direccion: cliente.direccion, cliente_referencia: cliente.referencia, guardar_cliente: guardarCliente,
-        tipo_entrega: tipoEntrega, cadete_id: tipoEntrega === 'delivery' ? cadeteId : null, envio: envioReal,
+        tipo_entrega: tipoEntrega, cadete_id: tipoEntrega === 'delivery' && cadeteId !== 'nos' ? cadeteId : null, envio: envioReal,
         descuento: num(descuento), forma_pago: formaPago,
-        paga_con: formaPago === 'efectivo' && num(pagaCon) ? num(pagaCon) : null,
-        vuelto: formaPago === 'efectivo' && tipoEntrega === 'delivery' ? num(vuelto) : 0,
+        monto_efectivo: formaPago === 'mixto' ? num(montoEfectivo) : null,
+        paga_con: conEfectivo && num(pagaCon) ? num(pagaCon) : null,
+        vuelto: conEfectivo && tipoEntrega === 'delivery' ? num(vuelto) : 0,
         notas, cobrar,
         items: items.map(({ key, ...x }) => x),
       };
@@ -391,7 +400,8 @@ export default function EditorComanda({ comanda, copiaDe, itemsIniciales, client
                 <div className="campo-label" style={{ marginTop: 12 }}>
                   Cadete {cadeteDelDia(cadetes) ? `· hoy ${DIAS_LARGO[diaSemanaOperativo()]} le toca a ${cadeteDelDia(cadetes).nombre}` : ''}
                 </div>
-                <Chips valor={cadeteId} onCambio={setCadeteId} opciones={cadetes.map((c) => ({ id: c.id, label: c.nombre }))} />
+                <Chips valor={cadeteId} onCambio={setCadeteId} opciones={[...cadetes.map((c) => ({ id: c.id, label: c.nombre })), { id: 'nos', label: '🙋 Nosotros' }]} />
+                {cadeteId === 'nos' && <div className="campo-ayuda">Lo llevan ustedes: este viaje no se le paga a ningún cadete.</div>}
               </>
             )}
           </>
@@ -401,10 +411,20 @@ export default function EditorComanda({ comanda, copiaDe, itemsIniciales, client
       {/* PAGO */}
       <div className="tarjeta">
         <h2>💵 Pago</h2>
-        <Chips valor={formaPago} onCambio={setFormaPago} opciones={CUENTAS.map((c) => ({ id: c.id, label: `${c.icono} ${c.nombre}` }))} />
-        {formaPago === 'efectivo' && (
+        <Chips valor={formaPago} onCambio={setFormaPago} opciones={FORMAS_PAGO.map((c) => ({ id: c.id, label: `${c.icono} ${c.nombre}` }))} />
+        {formaPago === 'mixto' && (
           <div className="grid2" style={{ marginTop: 12 }}>
-            <Campo label="Paga con">
+            <Campo label="💵 Parte en efectivo">
+              <input inputMode="numeric" placeholder="$" value={montoEfectivo} onChange={(e) => { setMontoEfectivo(e.target.value); setVueltoManual(false); }} />
+            </Campo>
+            <Campo label="📱 Parte Mercado Pago">
+              <input disabled value={num(montoEfectivo) > 0 ? money(Math.max(total - num(montoEfectivo), 0)) : '—'} />
+            </Campo>
+          </div>
+        )}
+        {conEfectivo && (
+          <div className="grid2" style={{ marginTop: 12 }}>
+            <Campo label={formaPago === 'mixto' ? 'Paga el efectivo con' : 'Paga con'}>
               <input inputMode="numeric" placeholder="$" value={pagaCon} onChange={(e) => { setPagaCon(e.target.value); setVueltoManual(false); }} />
             </Campo>
             {tipoEntrega === 'delivery' && (
@@ -414,8 +434,8 @@ export default function EditorComanda({ comanda, copiaDe, itemsIniciales, client
             )}
           </div>
         )}
-        {formaPago === 'efectivo' && tipoEntrega === 'delivery' && num(vuelto) > 0 && (
-          <div className="aviso">El cadete tiene que rendir {money(total + num(vuelto))} ({money(total)} + vuelto {money(num(vuelto))})</div>
+        {conEfectivo && tipoEntrega === 'delivery' && (num(vuelto) > 0 || formaPago === 'mixto') && efectivoACobrar > 0 && (
+          <div className="aviso">El cadete tiene que rendir {money(efectivoACobrar + num(vuelto))} en efectivo ({money(efectivoACobrar)}{num(vuelto) > 0 ? ` + vuelto ${money(num(vuelto))}` : ''})</div>
         )}
         <div className="grid2">
           <Campo label="Descuento"><input inputMode="numeric" placeholder="$0" value={descuento} onChange={(e) => setDescuento(e.target.value)} /></Campo>

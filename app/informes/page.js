@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase, traerTodo } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Cabecera, Chips, Cargando, Vacio, Barra } from '@/components/ui';
-import { money, cant, diaOperativo, isoDia, nombreCuenta } from '@/lib/utils';
+import { money, cant, diaOperativo, isoDia, nombreCuenta, partesPago } from '@/lib/utils';
 
 const DIAS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const INTERNOS = ['Vuelto a cadete', 'Movimiento entre cuentas', 'Anulación venta', 'Cobro deshecho', 'Devolución vuelto cadete', 'Ajuste vuelto cadete', 'Diferencia de arqueo'];
@@ -43,7 +43,7 @@ export default function Informes() {
     try {
       const [comandas, movs, { data: rubros }, { data: articulos }] = await Promise.all([
         traerTodo(() => supabase.from('comandas')
-          .select('id, total, envio, descuento, forma_pago, cliente_id, cliente_nombre, created_at, tipo_entrega, comanda_items(articulo_id, articulo2_id, es_mitad, descripcion, rubro_id, cantidad, subtotal)')
+          .select('id, total, envio, descuento, forma_pago, monto_efectivo, cliente_id, cliente_nombre, created_at, tipo_entrega, comanda_items(articulo_id, articulo2_id, es_mitad, descripcion, rubro_id, cantidad, subtotal)')
           .neq('estado', 'anulada').gte('created_at', r.desde.toISOString()).lt('created_at', r.hasta.toISOString()).order('id')),
         traerTodo(() => supabase.from('movimientos').select('tipo, concepto, monto, comanda_id, liquidacion_id')
           .gte('created_at', r.desde.toISOString()).lt('created_at', r.hasta.toISOString()).order('id')),
@@ -69,7 +69,11 @@ export default function Informes() {
       (dias[dn] ||= { nombre: DIAS[dn], total: 0, n: 0, fechas: new Set() }); dias[dn].total += t; dias[dn].n++; dias[dn].fechas.add(isoDia(d));
       const h = new Date(c.created_at).getHours();
       (horas[h] ||= { nombre: `${String(h).padStart(2, '0')}:00`, total: 0, n: 0, h }); horas[h].total += t; horas[h].n++;
-      (formas[c.forma_pago] ||= { nombre: nombreCuenta(c.forma_pago), total: 0, n: 0 }); formas[c.forma_pago].total += t; formas[c.forma_pago].n++;
+      // cobro mixto: se reparte entre efectivo y Mercado Pago
+      Object.entries(partesPago(c)).forEach(([cta, monto]) => {
+        if (monto <= 0) return;
+        (formas[cta] ||= { nombre: nombreCuenta(cta), total: 0, n: 0 }); formas[cta].total += monto; formas[cta].n++;
+      });
       const kd = isoDia(d);
       (porDia[kd] ||= { nombre: d.toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit', month: '2-digit' }), total: 0, n: 0, k: kd }); porDia[kd].total += t; porDia[kd].n++;
       const kc = c.cliente_id ? 'c' + c.cliente_id : 'n' + (c.cliente_nombre || 'Sin nombre').toLowerCase();
