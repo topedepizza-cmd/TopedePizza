@@ -3,26 +3,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase, traerTodo } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Cabecera, Chips, Cargando, Vacio, Barra } from '@/components/ui';
+import FiltroFechas from '@/components/FiltroFechas';
+import { rangoFechas, rangoAnterior } from '@/lib/fechas';
 import { money, cant, diaOperativo, isoDia, nombreCuenta, partesPago } from '@/lib/utils';
+import { descargarExcel, descargarPDF, precargarDescargas } from '@/lib/descargas';
 
 const DIAS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const INTERNOS = ['Vuelto a cadete', 'Movimiento entre cuentas', 'Anulación venta', 'Cobro deshecho', 'Devolución vuelto cadete', 'Ajuste vuelto cadete', 'Diferencia de arqueo'];
-
-function hoyOperativo() { const d = diaOperativo(new Date()); d.setHours(0, 0, 0, 0); return d; }
-function sumarDias(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-function inicioOperativo(d) { const x = new Date(d); x.setHours(3, 0, 0, 0); return x; }
-
-function rango(periodo, desdeTxt, hastaTxt) {
-  const hoy = hoyOperativo();
-  let a = hoy, b = hoy;
-  if (periodo === 'ayer') { a = sumarDias(hoy, -1); b = a; }
-  if (periodo === '7') a = sumarDias(hoy, -6);
-  if (periodo === '30') a = sumarDias(hoy, -29);
-  if (periodo === 'mes') a = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
-  if (periodo === 'mesant') { a = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1); b = new Date(hoy.getFullYear(), hoy.getMonth(), 0); }
-  if (periodo === 'custom' && desdeTxt && hastaTxt) { a = new Date(desdeTxt + 'T00:00'); b = new Date(hastaTxt + 'T00:00'); }
-  return { desde: inicioOperativo(a), hasta: inicioOperativo(sumarDias(b, 1)), a, b };
-}
 
 function top(obj, campo = 'total') {
   return Object.values(obj).sort((x, y) => y[campo] - x[campo]);
@@ -30,13 +17,16 @@ function top(obj, campo = 'total') {
 
 export default function Informes() {
   const { avisar } = useApp();
-  const [periodo, setPeriodo] = useState('7');
-  const [desdeTxt, setDesdeTxt] = useState(isoDia(sumarDias(new Date(), -7)));
-  const [hastaTxt, setHastaTxt] = useState(isoDia(new Date()));
+  const [periodo, setPeriodo] = useState({ modo: '7' });
+  const [diasSem, setDiasSem] = useState([]); // vacío = todos los días
   const [datos, setDatos] = useState(null);
   const [verArt, setVerArt] = useState('unidades');
+  const [bajando, setBajando] = useState(false);
 
-  const r = useMemo(() => rango(periodo, desdeTxt, hastaTxt), [periodo, desdeTxt, hastaTxt]);
+  const r = useMemo(() => rangoFechas(periodo), [periodo]);
+  const rAnt = useMemo(() => rangoAnterior(periodo), [periodo]);
+  useEffect(() => { precargarDescargas(); }, []);
+  const pasaDia = useCallback((f) => !diasSem.length || diasSem.includes(diaOperativo(f).getDay()), [diasSem]);
 
   const cargar = useCallback(async () => {
     setDatos(null);
@@ -45,14 +35,17 @@ export default function Informes() {
         traerTodo(() => supabase.from('comandas')
           .select('id, total, envio, descuento, forma_pago, monto_efectivo, cliente_id, cliente_nombre, created_at, tipo_entrega, comanda_items(articulo_id, articulo2_id, es_mitad, descripcion, rubro_id, cantidad, subtotal)')
           .neq('estado', 'anulada').gte('created_at', r.desde.toISOString()).lt('created_at', r.hasta.toISOString()).order('id')),
-        traerTodo(() => supabase.from('movimientos').select('tipo, concepto, monto, comanda_id, liquidacion_id')
+        traerTodo(() => supabase.from('movimientos').select('tipo, concepto, monto, comanda_id, liquidacion_id, created_at')
           .gte('created_at', r.desde.toISOString()).lt('created_at', r.hasta.toISOString()).order('id')),
         supabase.from('rubros').select('*'),
         supabase.from('articulos').select('id, nombre, costo, rubro_id'),
       ]);
-      setDatos({ comandas, movs, rubros: rubros || [], articulos: articulos || [] });
-    } catch (e) { avisar(e.message, 'error'); setDatos({ comandas: [], movs: [], rubros: [], articulos: [] }); }
-  }, [r, avisar]);
+      // período anterior (mismo largo) para comparar
+      const anterior = await traerTodo(() => supabase.from('comandas').select('id, total, created_at')
+        .neq('estado', 'anulada').gte('created_at', rAnt.desde.toISOString()).lt('created_at', rAnt.hasta.toISOString()).order('id'));
+      setDatos({ comandas, movs, anterior, rubros: rubros || [], articulos: articulos || [] });
+    } catch (e) { avisar(e.message, 'error'); setDatos({ comandas: [], movs: [], anterior: [], rubros: [], articulos: [] }); }
+  }, [r, rAnt, avisar]);
   useEffect(() => { cargar(); }, [cargar]);
 
   const inf = useMemo(() => {
@@ -61,7 +54,10 @@ export default function Informes() {
     const rubMap = Object.fromEntries(datos.rubros.map((x) => [x.id, x.nombre]));
     const arts = {}, rubs = {}, clis = {}, dias = {}, horas = {}, formas = {}, porDia = {};
     let ventas = 0, envios = 0, unidades = 0, costo = 0, conCosto = false;
-    datos.comandas.forEach((c) => {
+    const comandas = datos.comandas.filter((c) => pasaDia(c.created_at));
+    const ant = datos.anterior.filter((c) => pasaDia(c.created_at));
+    const ventasAnt = ant.reduce((a, c) => a + Number(c.total), 0);
+    comandas.forEach((c) => {
       const t = Number(c.total);
       ventas += t; envios += Number(c.envio);
       const d = diaOperativo(c.created_at);
@@ -96,59 +92,107 @@ export default function Informes() {
     const gastosObj = {};
     let gastos = 0;
     datos.movs.forEach((m) => {
-      if (m.tipo !== 'egreso' || INTERNOS.includes(m.concepto)) return;
+      if (m.tipo !== 'egreso' || INTERNOS.includes(m.concepto) || !pasaDia(m.created_at)) return;
       gastos += Number(m.monto);
       (gastosObj[m.concepto] ||= { nombre: m.concepto, total: 0 }); gastosObj[m.concepto].total += Number(m.monto);
     });
-    const n = datos.comandas.length;
+    const n = comandas.length;
     return {
+      comandas, ventasAnt, nAnt: ant.length, ticketAnt: ant.length ? ventasAnt / ant.length : 0,
       ventas, envios, unidades, n, ticket: n ? ventas / n : 0, gastos, costo, conCosto,
       arts: Object.values(arts), rubs: top(rubs), clis: top(clis).slice(0, 15),
       dias: Object.values(dias).map((x) => ({ ...x, prom: x.total / x.fechas.size })).sort((a, b) => b.prom - a.prom),
       horas: Object.values(horas).sort((a, b) => ((a.h + 21) % 24) - ((b.h + 21) % 24)),
       formas: top(formas), porDia: Object.values(porDia).sort((a, b) => b.k.localeCompare(a.k)), gastosLista: top(gastosObj),
     };
-  }, [datos]);
+  }, [datos, pasaDia]);
 
-  function exportar() {
-    if (!datos) return;
-    const filas = [['Fecha', 'Hora', 'Cliente', 'Forma de pago', 'Detalle', 'Envío', 'Descuento', 'Total']];
-    datos.comandas.forEach((c) => {
-      const f = new Date(c.created_at);
-      filas.push([f.toLocaleDateString('es-AR'), f.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }), c.cliente_nombre || '',
-        nombreCuenta(c.forma_pago), (c.comanda_items || []).map((i) => `${cant(i.cantidad)} ${i.descripcion}`).join(' | '), c.envio, c.descuento, c.total]);
-    });
-    const csv = '﻿' + filas.map((f) => f.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = `ventas_${isoDia(r.a)}_${isoDia(r.b)}.csv`; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  const etiquetaDias = diasSem.length ? ' · solo ' + [...diasSem].sort().map((d) => DIAS[d]).join(', ') : '';
+  const archivo = (ext) => `informe_${r.isoA}${r.isoA !== r.isoB ? '_al_' + r.isoB : ''}.${ext}`;
+
+  async function bajarExcel() {
+    if (!inf) return;
+    setBajando(true);
+    try {
+      await descargarExcel(archivo('xlsx'), [
+        { nombre: 'Ventas', filas: inf.comandas.map((c) => {
+          const f = new Date(c.created_at); const pp = partesPago(c);
+          return {
+            Fecha: diaOperativo(c.created_at).toLocaleDateString('es-AR'), Hora: f.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
+            Cliente: c.cliente_nombre || '', Entrega: c.tipo_entrega === 'retiro' ? 'Retira' : 'Delivery', 'Forma de pago': nombreCuenta(c.forma_pago),
+            Detalle: (c.comanda_items || []).map((i) => `${cant(i.cantidad)} ${i.descripcion}`).join(' | '),
+            Envío: Number(c.envio) || 0, Descuento: Number(c.descuento) || 0, Total: Number(c.total) || 0, Efectivo: pp.efectivo, 'Mercado Pago': pp.mercadopago,
+          };
+        }) },
+        { nombre: 'Productos', filas: [...inf.arts].sort((a, b) => b.unidades - a.unidades).map((a) => ({ Producto: a.nombre, Unidades: a.unidades, Total: Math.round(a.total) })) },
+        { nombre: 'Rubros', filas: inf.rubs.map((x) => ({ Rubro: x.nombre, Unidades: x.unidades, Total: x.total })) },
+        { nombre: 'Por día', filas: [...inf.porDia].reverse().map((x) => ({ Día: x.nombre, Comandas: x.n, Total: x.total })) },
+        { nombre: 'Clientes', filas: inf.clis.map((x) => ({ Cliente: x.nombre, Pedidos: x.n, Total: x.total })) },
+        { nombre: 'Gastos', filas: inf.gastosLista.map((x) => ({ Concepto: x.nombre, Total: x.total })) },
+      ]);
+    } catch (e) { avisar('No se pudo generar el Excel: ' + e.message, 'error'); }
+    setBajando(false);
   }
+
+  async function bajarPDF() {
+    if (!inf) return;
+    setBajando(true);
+    try {
+      const cols2 = (a, b) => [a, b];
+      await descargarPDF({
+        archivo: archivo('pdf'),
+        titulo: 'Informe de ventas',
+        subtitulo: r.etiqueta + etiquetaDias,
+        kpis: [['Ventas', money(inf.ventas)], ['Comandas', String(inf.n)], ['Ticket promedio', money(inf.ticket)], ['Gastos', money(inf.gastos)],
+          ['Ventas - gastos', money(inf.ventas - inf.gastos)], ['Envíos cobrados', money(inf.envios)], ['Productos vendidos', cant(inf.unidades)],
+          ['vs período anterior', inf.ventasAnt ? `${inf.ventas >= inf.ventasAnt ? '+' : ''}${Math.round(((inf.ventas - inf.ventasAnt) / inf.ventasAnt) * 100)}%` : '—']],
+        bloques: [
+          { titulo: 'Más vendidos', columnas: ['Producto', 'Unidades', 'Total'], alinearDerecha: [1, 2],
+            filas: [...inf.arts].sort((a, b) => b.unidades - a.unidades).map((a) => [a.nombre, cant(a.unidades), money(a.total)]) },
+          { titulo: 'Rubros', columnas: ['Rubro', 'Unidades', 'Total'], alinearDerecha: [1, 2], filas: inf.rubs.map((x) => [x.nombre, cant(x.unidades), money(x.total)]) },
+          { titulo: 'Formas de pago', columnas: cols2('Forma', 'Total'), alinearDerecha: [1], filas: inf.formas.map((x) => [x.nombre, money(x.total)]) },
+          { titulo: 'Días de la semana (promedio por día)', columnas: ['Día', 'Días', 'Promedio', 'Comandas/día'], alinearDerecha: [1, 2, 3],
+            filas: inf.dias.map((x) => [x.nombre, x.fechas.size, money(x.prom), Math.round(x.n / x.fechas.size)]) },
+          { titulo: 'Ventas por día', columnas: ['Día', 'Comandas', 'Total'], alinearDerecha: [1, 2], filas: [...inf.porDia].reverse().map((x) => [x.nombre, x.n, money(x.total)]) },
+          { titulo: 'Clientes que más compran', columnas: ['Cliente', 'Pedidos', 'Total'], alinearDerecha: [1, 2], filas: inf.clis.map((x) => [x.nombre, x.n, money(x.total)]) },
+          ...(inf.gastosLista.length ? [{ titulo: 'Gastos por concepto', columnas: cols2('Concepto', 'Total'), alinearDerecha: [1],
+            filas: inf.gastosLista.map((x) => [x.nombre, money(x.total)]), pie: ['Total', money(inf.gastos)] }] : []),
+        ],
+      });
+    } catch (e) { avisar('No se pudo generar el PDF: ' + e.message, 'error'); }
+    setBajando(false);
+  }
+
+  const comparar = (act, ant) => {
+    if (!ant) return null;
+    const pct = Math.round(((act - ant) / ant) * 100);
+    return <span className={pct >= 0 ? 'verde-t' : 'rojo-t'} style={{ fontWeight: 700 }}>{pct >= 0 ? '▲' : '▼'} {Math.abs(pct)}% vs anterior</span>;
+  };
 
   const artsOrden = inf ? [...inf.arts].sort((a, b) => b[verArt] - a[verArt]).slice(0, 15) : [];
 
   return (
     <>
-      <Cabecera titulo="Informes" derecha={<button className="btn borde chico" onClick={exportar}>⬇ Excel</button>} />
-      <Chips valor={periodo} onCambio={setPeriodo} opciones={[
-        { id: 'hoy', label: 'Hoy' }, { id: 'ayer', label: 'Ayer' }, { id: '7', label: '7 días' }, { id: '30', label: '30 días' },
-        { id: 'mes', label: 'Este mes' }, { id: 'mesant', label: 'Mes anterior' }, { id: 'custom', label: 'Elegir fechas' },
-      ]} />
-      {periodo === 'custom' && (
-        <div className="grid2" style={{ marginTop: 10 }}>
-          <input type="date" value={desdeTxt} onChange={(e) => setDesdeTxt(e.target.value)} />
-          <input type="date" value={hastaTxt} onChange={(e) => setHastaTxt(e.target.value)} />
-        </div>
-      )}
-      <p className="suave chico-t" style={{ margin: '8px 2px' }}>
-        {r.a.toLocaleDateString('es-AR')} {isoDia(r.a) !== isoDia(r.b) && `al ${r.b.toLocaleDateString('es-AR')}`} · lo vendido antes de las 3 AM cuenta para el día anterior
-      </p>
+      <Cabecera titulo="Informes" />
+      <FiltroFechas valor={periodo} onCambio={setPeriodo} />
+      <div className="campo-label">Solo estos días de la semana</div>
+      <div className="chips" style={{ marginBottom: 12 }}>
+        <button className={!diasSem.length ? 'chip activo' : 'chip'} onClick={() => setDiasSem([])}>Todos</button>
+        {[4, 5, 6, 0, 1, 2, 3].map((d) => (
+          <button key={d} className={diasSem.includes(d) ? 'chip activo' : 'chip'}
+            onClick={() => setDiasSem((x) => (x.includes(d) ? x.filter((y) => y !== d) : [...x, d]))}>{DIAS[d].slice(0, 3)}</button>
+        ))}
+      </div>
+      <div className="descargas">
+        <button className="btn borde" disabled={bajando || !inf?.n} onClick={bajarExcel}>📊 Excel</button>
+        <button className="btn borde" disabled={bajando || !inf?.n} onClick={bajarPDF}>📄 PDF con logo</button>
+      </div>
 
       {!inf ? <Cargando /> : inf.n === 0 ? <Vacio texto="No hay ventas en este período" /> : (
         <>
           <div className="kpis">
-            <div className="kpi destacado"><div className="k-label">Ventas</div><div className="k-valor">{money(inf.ventas)}</div><div className="k-sub">{inf.n} comandas</div></div>
-            <div className="kpi"><div className="k-label">Ticket promedio</div><div className="k-valor">{money(inf.ticket)}</div><div className="k-sub">{cant(inf.unidades)} productos</div></div>
+            <div className="kpi destacado"><div className="k-label">Ventas</div><div className="k-valor">{money(inf.ventas)}</div><div className="k-sub">{inf.n} comandas</div>{inf.ventasAnt > 0 && <div className="k-sub" style={{ color: '#fff' }}>{inf.ventas >= inf.ventasAnt ? '▲' : '▼'} {Math.abs(Math.round(((inf.ventas - inf.ventasAnt) / inf.ventasAnt) * 100))}% vs período anterior</div>}</div>
+            <div className="kpi"><div className="k-label">Ticket promedio</div><div className="k-valor">{money(inf.ticket)}</div><div className="k-sub">{cant(inf.unidades)} productos</div>{inf.ticketAnt > 0 && <div className="k-sub">{comparar(inf.ticket, inf.ticketAnt)}</div>}</div>
             <div className="kpi"><div className="k-label">Gastos</div><div className="k-valor rojo-t">{money(inf.gastos)}</div><div className="k-sub">incluye pago cadete</div></div>
             <div className="kpi"><div className="k-label">Ventas − gastos</div><div className={`k-valor ${inf.ventas - inf.gastos >= 0 ? 'verde-t' : 'rojo-t'}`}>{money(inf.ventas - inf.gastos)}</div><div className="k-sub">envíos cobrados {money(inf.envios)}</div></div>
           </div>

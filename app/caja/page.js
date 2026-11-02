@@ -1,6 +1,8 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
-import { supabase, rpc } from '@/lib/supabase';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { supabase, rpc, traerTodo } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Cabecera, Hoja, Chips, Campo, Cargando, Vacio } from '@/components/ui';
 import { money, num, hora, fechaHora, CUENTAS, nombreCuenta, iconoCuenta, linkWhatsapp } from '@/lib/utils';
@@ -52,6 +54,8 @@ export default function Caja() {
   const [form, setForm] = useState({});
   const [verJornada, setVerJornada] = useState(null);
   const [resumen, setResumen] = useState(null);
+  const [mes, setMes] = useState(null);
+  const router = useRouter();
   const [movBorrar, setMovBorrar] = useState(null);
   const [trabajando, setTrabajando] = useState(false);
 
@@ -73,6 +77,20 @@ export default function Caja() {
         n: (ab || []).length,
       });
       setHistorial(h || []);
+      // resumen del mes en curso
+      const hoy = new Date(jj.fecha + 'T12:00');
+      const primero = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-01`;
+      const { data: jm } = await supabase.from('jornadas').select('id').gte('fecha', primero);
+      const ids = (jm || []).map((x) => x.id);
+      const mm = ids.length ? await traerTodo(() => supabase.from('movimientos').select('tipo, concepto, monto, cuenta').in('jornada_id', ids).order('id')) : [];
+      const sum = (f) => mm.filter(f).reduce((a, x) => a + Number(x.monto), 0);
+      setMes({
+        nombre: hoy.toLocaleDateString('es-AR', { month: 'long' }),
+        ventas: sum((x) => x.concepto === 'Venta') - sum((x) => ['Anulación venta', 'Cobro deshecho'].includes(x.concepto)),
+        gastos: sum((x) => x.tipo === 'egreso' && !INTERNOS_EGRESO.includes(x.concepto) && x.concepto !== 'Retiro socios'),
+        retiros: sum((x) => x.concepto === 'Retiro socios'),
+        cadete: sum((x) => x.concepto === 'Pago cadete'),
+      });
     } catch (e) { avisar(e.message, 'error'); }
   }, [avisar]);
 
@@ -159,19 +177,30 @@ export default function Caja() {
       <Cabecera titulo="Caja" sub={`Jornada ${fechaLarga(j.fecha)} · abierta ${hora(j.abierta_at)}`} />
 
       <div className="lista">
-        {CUENTAS.map((c) => (
-          <div className="saldo-card" key={c.id}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span className="saldo-ico">{c.icono}</span>
-              <div><div className="item-titulo">{c.nombre}</div><div className="item-sub">Arrancó con {money(j['si_' + c.id])}</div></div>
-            </div>
-            <div className={`saldo-valor mono ${Number(saldos[c.id]) < 0 ? 'rojo-t' : ''}`}>{money(saldos[c.id])}</div>
-          </div>
-        ))}
-        <div className="saldo-card" style={{ background: 'var(--fondo)' }}>
+        {CUENTAS.map((c) => {
+          const ing = movs.filter((m) => m.cuenta === c.id && m.tipo === 'ingreso').reduce((a, m) => a + Number(m.monto), 0);
+          const egr = movs.filter((m) => m.cuenta === c.id && m.tipo === 'egreso').reduce((a, m) => a + Number(m.monto), 0);
+          return (
+            <Link href={`/caja/movimientos?cuenta=${c.id}`} className="saldo-card clic" key={c.id}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                <span className="saldo-ico">{c.icono}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div className="item-titulo">{c.nombre}</div>
+                  <div className="item-sub">Arrancó con {money(j['si_' + c.id])}</div>
+                  <div className="item-sub">Hoy <span className="verde-t">+{money(ing)}</span> · <span className="rojo-t">−{money(egr)}</span> · ver movimientos</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <div className={`saldo-valor mono ${Number(saldos[c.id]) < 0 ? 'rojo-t' : ''}`}>{money(saldos[c.id])}</div>
+                <span className="saldo-flecha">›</span>
+              </div>
+            </Link>
+          );
+        })}
+        <Link href="/caja/movimientos" className="saldo-card clic" style={{ background: 'var(--fondo)' }}>
           <div className="item-titulo" style={{ fontSize: 16 }}>Total en caja</div>
-          <div className="saldo-valor mono">{money(totalSaldo)}</div>
-        </div>
+          <div style={{ display: 'flex', alignItems: 'center' }}><div className="saldo-valor mono">{money(totalSaldo)}</div><span className="saldo-flecha">›</span></div>
+        </Link>
       </div>
 
       {pend.n > 0 && (
@@ -187,6 +216,12 @@ export default function Caja() {
         <div className="kpi"><div className="k-label">Gastos hoy</div><div className="k-valor rojo-t">{money(gastos)}</div></div>
       </div>
 
+      <div className="grid3" style={{ marginBottom: 14 }}>
+        <Link href="/caja/movimientos?tipo=ingreso&modo=mes" className="btn borde chico" style={{ minHeight: 48 }}>📥 Ingresos</Link>
+        <Link href="/caja/movimientos?tipo=egreso&modo=mes" className="btn borde chico" style={{ minHeight: 48 }}>📤 Egresos</Link>
+        <Link href="/caja/movimientos" className="btn borde chico" style={{ minHeight: 48 }}>📋 Todo</Link>
+      </div>
+
       <div className="grid2" style={{ marginBottom: 8 }}>
         <button className="btn peligro" onClick={() => abrir('egreso')}>− Gasto / egreso</button>
         <button className="btn borde" onClick={() => abrir('ingreso')}>+ Ingreso extra</button>
@@ -198,10 +233,25 @@ export default function Caja() {
       <button className="btn borde bloque" style={{ marginTop: 8 }} onClick={() => armarResumen(j, null)}>📲 Resumen de hoy para mi socia</button>
       <p className="suave chico-t centro">Si no cerrás, se cierra sola a las 3:00 AM y arranca en 0 con el saldo de hoy. Los cierres anteriores también se pueden mandar desde abajo.</p>
 
-      <div className="seccion-titulo">Movimientos de hoy</div>
+      {mes && (
+        <div className="tarjeta">
+          <h2 style={{ textTransform: 'none' }}>📅 Resumen de {mes.nombre}</h2>
+          <div className="resumen-linea"><span>Ventas cobradas</span><b className="mono verde-t">{money(mes.ventas)}</b></div>
+          <div className="resumen-linea"><span>Gastos (con cadetes)</span><b className="mono rojo-t">−{money(mes.gastos)}</b></div>
+          <div className="resumen-linea suave chico-t"><span>   de eso, pagos a cadetes</span><span className="mono">{money(mes.cadete)}</span></div>
+          <div className="resumen-linea total"><span>Resultado</span><span className={`mono ${mes.ventas - mes.gastos >= 0 ? 'verde-t' : 'rojo-t'}`}>{money(mes.ventas - mes.gastos)}</span></div>
+          {mes.retiros > 0 && <div className="resumen-linea"><span>Retiros de socios</span><b className="mono">{money(mes.retiros)}</b></div>}
+          <Link href="/caja/movimientos?modo=mes" className="btn borde chico bloque" style={{ marginTop: 10 }}>Ver el mes y descargar Excel / PDF</Link>
+        </div>
+      )}
+
+      <div className="seccion-titulo" style={{ justifyContent: 'space-between' }}>
+        Movimientos de hoy
+        {movs.length > 0 && <Link href="/caja/movimientos" className="chico-t rojo-t" style={{ fontFamily: 'inherit' }}>Ver todos ›</Link>}
+      </div>
       {movs.length === 0 ? <Vacio texto="Sin movimientos todavía" /> : (
         <div className="lista">
-          {movs.map((m) => (
+          {movs.slice(0, 10).map((m) => (
             <div key={m.id} className="item clic" onClick={() => !m.comanda_id && !m.liquidacion_id && setMovBorrar(m)}>
               <div className="item-cuerpo">
                 <div className="item-titulo">{m.concepto}</div>
@@ -278,9 +328,12 @@ export default function Caja() {
       {/* HISTORIAL */}
       <Hoja abierta={!!verJornada} titulo={verJornada ? `Jornada ${fechaLarga(verJornada.fecha)}` : ''} onCerrar={() => setVerJornada(null)}
         pie={verJornada && (
-          <button className="btn verde bloque" onClick={() => { const h = verJornada; setVerJornada(null); armarResumen(h, { efectivo: h.sf_efectivo, mercadopago: h.sf_mercadopago, transferencia: h.sf_transferencia }); }}>
-            📲 Resumen para mandar a mi socia
-          </button>
+          <div className="fila-btns">
+            <button className="btn borde" onClick={() => router.push(`/caja/movimientos?desde=${verJornada.fecha}&hasta=${verJornada.fecha}`)}>📋 Movimientos / PDF</button>
+            <button className="btn verde" onClick={() => { const h = verJornada; setVerJornada(null); armarResumen(h, { efectivo: h.sf_efectivo, mercadopago: h.sf_mercadopago, transferencia: h.sf_transferencia }); }}>
+              📲 A mi socia
+            </button>
+          </div>
         )}>
         {verJornada && (
           <>
