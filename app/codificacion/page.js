@@ -37,7 +37,10 @@ export default function Codificacion() {
         codigo: e.codigo || null, nombre: (e.nombre || '').trim(), rubro_id: e.rubro_id || null, subrubro_id: e.subrubro_id || null,
         precio: num(e.precio), costo: num(e.costo), permite_mitad: !!e.permite_mitad, controla_stock: !!e.controla_stock,
         stock_minimo: num(e.stock_minimo), alias: e.alias || null, orden: num(e.orden), activo: e.activo !== false,
+        descuenta_de: e.descuenta_de || null, descuenta_factor: e.descuenta_de ? (num(e.descuenta_factor) || 1) : 1,
       };
+      if (d.descuenta_de) d.controla_stock = false; // el stock lo lleva el otro artículo
+      if (d.descuenta_de && d.descuenta_de === e.id) return avisar('No puede descontar de sí mismo', 'error');
       if (!d.nombre) return avisar('Poné un nombre', 'error');
       res = e.id ? await supabase.from('articulos').update(d).eq('id', e.id) : await supabase.from('articulos').insert(d);
     } else if (e.tipo === 'rubro') {
@@ -125,6 +128,7 @@ export default function Codificacion() {
                           {nomSub(a.subrubro_id)}
                           {a.permite_mitad && <span className="badge b-ambar" style={{ marginLeft: 6 }}>½</span>}
                           {a.controla_stock && <span className="badge b-azul" style={{ marginLeft: 6 }}>stock {cant(a.stock)}</span>}
+                          {a.descuenta_de && <span className="badge b-azul" style={{ marginLeft: 6 }}>↳ resta {cant(a.descuenta_factor || 1)} de {articulos.find((x) => x.id === a.descuenta_de)?.nombre || '?'}</span>}
                           {!a.activo && <span className="badge b-gris" style={{ marginLeft: 6 }}>inactivo</span>}
                         </div>
                       </div>
@@ -203,8 +207,26 @@ export default function Codificacion() {
             </div>
             {num(edit.costo) > 0 && num(edit.precio) > 0 && <div className="aviso verde">Margen: {money(num(edit.precio) - num(edit.costo))} ({Math.round(((num(edit.precio) - num(edit.costo)) / num(edit.precio)) * 100)}%)</div>}
             <label className="check"><input type="checkbox" checked={!!edit.permite_mitad} onChange={(e) => setEdit({ ...edit, permite_mitad: e.target.checked })} />Se puede pedir mitad y mitad</label>
-            <label className="check"><input type="checkbox" checked={!!edit.controla_stock} onChange={(e) => setEdit({ ...edit, controla_stock: e.target.checked })} />Controla stock (ej: congeladas)</label>
-            {edit.controla_stock && <Campo label="Stock mínimo"><input inputMode="numeric" value={edit.stock_minimo ?? ''} onChange={(e) => setEdit({ ...edit, stock_minimo: e.target.value })} /></Campo>}
+            {!edit.descuenta_de && (
+              <label className="check"><input type="checkbox" checked={!!edit.controla_stock} onChange={(e) => setEdit({ ...edit, controla_stock: e.target.checked })} />Controla stock (ej: congeladas)</label>
+            )}
+            {edit.controla_stock && !edit.descuenta_de && <Campo label="Stock mínimo"><input inputMode="numeric" value={edit.stock_minimo ?? ''} onChange={(e) => setEdit({ ...edit, stock_minimo: e.target.value })} /></Campo>}
+            <div className="grid2">
+              <Campo label="Descuenta stock de" ayuda="Ej: las horneadas restan de las congeladas">
+                <select value={edit.descuenta_de || ''} onChange={(e) => setEdit({ ...edit, descuenta_de: Number(e.target.value) || null, descuenta_factor: edit.descuenta_factor || 1 })}>
+                  <option value="">— De sí mismo —</option>
+                  {articulos.filter((x) => x.controla_stock && x.id !== edit.id).map((x) => <option key={x.id} value={x.id}>{x.nombre} (stock {cant(x.stock)})</option>)}
+                </select>
+              </Campo>
+              {edit.descuenta_de && (
+                <Campo label="¿Cuántas resta cada una?" ayuda="Misma unidad que ese stock">
+                  <input inputMode="decimal" value={edit.descuenta_factor ?? 1} onChange={(e) => setEdit({ ...edit, descuenta_factor: e.target.value })} />
+                </Campo>
+              )}
+            </div>
+            {edit.descuenta_de && (
+              <div className="aviso">Cada {edit.nombre || 'venta'} resta {cant(num(edit.descuenta_factor) || 1)} de “{articulos.find((x) => x.id === edit.descuenta_de)?.nombre}”.</div>
+            )}
             <Campo label="Alias para dictado" ayuda="Otras formas en que lo piden, separadas por coma. Ej: muzza, mozzarella">
               <input value={edit.alias || ''} onChange={(e) => setEdit({ ...edit, alias: e.target.value })} />
             </Campo>

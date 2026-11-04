@@ -31,6 +31,7 @@ export default function Comandas() {
   const [anterior, setAnterior] = useState({ jornada: null, comandas: [] });
   const [buscar, setBuscar] = useState('');
   const [eventos, setEventos] = useState([]);
+  const [verAnteriores, setVerAnteriores] = useState(false); // pendientes de días anteriores: ocultos hasta que los abras
 
   const cargar = useCallback(async () => {
     try {
@@ -70,6 +71,15 @@ export default function Comandas() {
       setComandas([]);
     }
   }, [avisar]);
+
+  useEffect(() => {
+    try { setVerAnteriores(localStorage.getItem('verAnteriores') === '1'); } catch {}
+  }, []);
+  const alternarAnteriores = () => {
+    const v = !verAnteriores;
+    setVerAnteriores(v);
+    try { localStorage.setItem('verAnteriores', v ? '1' : '0'); } catch {}
+  };
 
   useEffect(() => {
     cargar();
@@ -176,12 +186,6 @@ export default function Comandas() {
         </div>
       </div>
 
-      {pendAnteriores.length > 0 && filtro !== 'pendientes' && (
-        <div className="aviso rojo" style={{ cursor: 'pointer' }} onClick={() => setFiltro('pendientes')}>
-          📅 Hay {pendAnteriores.length} pedido{pendAnteriores.length > 1 ? 's' : ''} de días anteriores sin entregar — tocá para ver
-        </div>
-      )}
-
       {alertas?.length > 0 && (() => {
         const bajos = alertas.filter((a) => a.nivel === 'bajo');
         return (
@@ -210,16 +214,20 @@ export default function Comandas() {
       {comandas === null ? <Cargando /> : (
         <>
           {arrastradas.length > 0 && (
+            <button className="btn borde bloque" style={{ marginBottom: 10, justifyContent: 'space-between' }} onClick={alternarAnteriores}>
+              <span>📅 {arrastradas.length} pendiente{arrastradas.length > 1 ? 's' : ''} de días anteriores</span>
+              <span>{verAnteriores ? 'Ocultar ▲' : 'Ver ▼'}</span>
+            </button>
+          )}
+          {arrastradas.length > 0 && verAnteriores && (
             <>
-              <div className="seccion-titulo">📅 Pendientes de días anteriores</div>
               {arrastradas.map(tarjeta)}
               <div className="seccion-titulo">🍕 Comandas de hoy</div>
             </>
           )}
           {lista.length === 0
-            ? (arrastradas.length === 0 && <Vacio emoji={filtro === 'abiertas' || filtro === 'pendientes' ? '🙌' : '🍕'} texto={textoVacio} />)
+            ? <Vacio emoji={filtro === 'abiertas' || filtro === 'pendientes' ? '🙌' : '🍕'} texto={textoVacio} />
             : lista.map(tarjeta)}
-          {lista.length === 0 && arrastradas.length > 0 && <div className="suave chico-t" style={{ textAlign: 'center', margin: 10 }}>Todavía no hay comandas nuevas hoy.</div>}
         </>
       )}
 
