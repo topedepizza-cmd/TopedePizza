@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Cabecera, Hoja, Campo, Cargando, Vacio } from '@/components/ui';
-import SelectorProductos, { productosParaGuardar } from '@/components/SelectorProductos';
+import SelectorProductos, { paraGuardar, valorDesdeEvento } from '@/components/SelectorProductos';
 import { money, fechaHora, hora } from '@/lib/utils';
 import { duracion } from '@/lib/eventos';
 
@@ -18,7 +18,7 @@ export default function Eventos() {
   const [articulos, setArticulos] = useState([]);
   const [rubros, setRubros] = useState([]);
   const [form, setForm] = useState({ nombre: '', lugar: '' });
-  const [prods, setProds] = useState({});
+  const [prods, setProds] = useState({ productos: {}, stocks: {} });
   const [trabajando, setTrabajando] = useState(false);
 
   const cargar = useCallback(async () => {
@@ -38,7 +38,7 @@ export default function Eventos() {
 
   async function abrirHoja() {
     setForm({ nombre: '', lugar: '' });
-    setProds({});
+    setProds({ productos: {}, stocks: {} });
     setHoja(true);
     const [{ data: a }, { data: r }] = await Promise.all([
       supabase.from('articulos').select('id, nombre, precio, rubro_id, orden').eq('activo', true).order('orden').order('nombre'),
@@ -48,21 +48,25 @@ export default function Eventos() {
     setRubros(r || []);
   }
 
-  // copia los productos (y precios) del último evento
+  // copia los productos, precios y stock del último evento
   async function repetirUltimo() {
     const ult = (eventos || [])[0];
     if (!ult) return;
-    const { data } = await supabase.from('evento_productos').select('*').eq('evento_id', ult.id);
-    const v = {};
-    (data || []).forEach((p) => { if (articulos.some((a) => a.id === p.articulo_id)) v[p.articulo_id] = { precio: String(Number(p.precio)), llevado: p.llevado === null ? '' : String(Number(p.llevado)) }; });
+    const [{ data: ps }, { data: ss }] = await Promise.all([
+      supabase.from('evento_productos').select('*').eq('evento_id', ult.id),
+      supabase.from('evento_stocks').select('*').eq('evento_id', ult.id),
+    ]);
+    const v = valorDesdeEvento(ps || [], ss || [], articulos);
+    Object.values(v.productos).forEach((x) => { x.agotado = false; });
     setProds(v);
-    avisar(`Copiados ${Object.keys(v).length} productos de “${ult.nombre}”`);
+    avisar(`Copiados ${Object.keys(v.productos).length} productos de “${ult.nombre}”`);
   }
 
   async function iniciar() {
     setTrabajando(true);
     try {
-      const id = await rpc('abrir_evento', { p_nombre: form.nombre, p_lugar: form.lugar, p_productos: productosParaGuardar(prods, articulos) });
+      const g = paraGuardar(prods, articulos, rubros);
+      const id = await rpc('abrir_evento', { p_nombre: form.nombre, p_lugar: form.lugar, p_productos: g.productos, p_stocks: g.stocks });
       avisar('Evento iniciado 🎪 ¡A vender!');
       router.push(`/evento/${id}`);
     } catch (e) { avisar(e.message, 'error'); }
@@ -113,15 +117,14 @@ export default function Eventos() {
       )}
 
       <Hoja abierta={hoja} titulo="Iniciar evento" onCerrar={() => setHoja(false)}
-        pie={<button className="btn primario bloque grande" disabled={trabajando || !form.nombre.trim() || !Object.keys(prods).length} onClick={iniciar}>
-          🎪 Iniciar con {Object.keys(prods).length} productos
+        pie={<button className="btn primario bloque grande" disabled={trabajando || !form.nombre.trim() || !Object.keys(prods.productos).length} onClick={iniciar}>
+          🎪 Iniciar con {Object.keys(prods.productos).length} productos
         </button>}>
         <Campo label="Nombre del evento"><input value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} placeholder="Ej: Feria de la plaza" autoFocus /></Campo>
         <Campo label="Lugar (opcional)"><input value={form.lugar} onChange={(e) => setForm({ ...form, lugar: e.target.value })} placeholder="Ej: Plaza Vieja, Yerba Buena" /></Campo>
         {(eventos || []).length > 0 && (
           <button className="btn borde bloque chico" style={{ marginBottom: 12 }} onClick={repetirUltimo}>↺ Repetir productos y precios del último evento</button>
         )}
-        <div className="campo-label">¿Qué llevamos a vender?</div>
         {!articulos.length ? <Cargando /> : <SelectorProductos articulos={articulos} rubros={rubros} valor={prods} onCambio={setProds} />}
       </Hoja>
     </>

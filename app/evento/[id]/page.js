@@ -4,9 +4,9 @@ import { useParams, useRouter } from 'next/navigation';
 import { supabase, rpc } from '@/lib/supabase';
 import { useApp } from '@/components/AppShell';
 import { Hoja, Chips, Campo, Cargando, Vacio, Confirmar, Barra } from '@/components/ui';
-import SelectorProductos, { productosParaGuardar } from '@/components/SelectorProductos';
+import SelectorProductos, { paraGuardar, valorDesdeEvento } from '@/components/SelectorProductos';
 import { money, num, cant, hora, CUENTAS, nombreCuenta, iconoCuenta, partesPago, linkWhatsapp } from '@/lib/utils';
-import { ESTADOS_EVENTO, resumenEvento, textoEvento, duracion } from '@/lib/eventos';
+import { ESTADOS_EVENTO, resumenEvento, textoEvento, duracion, TIPOS, tipoDe, emojiDe, calcularStocks } from '@/lib/eventos';
 
 // 4:05 / 1:12:30
 function reloj(ms) {
@@ -22,8 +22,7 @@ let seq = 1;
 const clave = () => `e${Date.now()}-${seq++}`;
 // montos con los que suelen pagar (redondeos para arriba del total)
 const billetes = (t) => [...new Set([1000, 5000, 10000, 20000].map((b) => Math.ceil((t + 1) / b) * b))].filter((b) => b > t).slice(0, 4);
-// colores por rubro para encontrar rápido los botones
-const COLORES = ['#e2261c', '#ffb703', '#2f5fb3', '#17944b', '#8e44ad', '#e67e22', '#16a085'];
+const ORDEN_TIPO = { pizza: 0, sfija: 1, bebida: 2, congelada: 3, otro: 4 };
 
 export default function EventoPOS() {
   const { id } = useParams();
@@ -31,6 +30,7 @@ export default function EventoPOS() {
   const { avisar, config } = useApp();
   const [evento, setEvento] = useState(null);
   const [productos, setProductos] = useState([]);
+  const [stocks, setStocks] = useState([]);
   const [articulos, setArticulos] = useState([]);
   const [rubros, setRubros] = useState([]);
   const [comandas, setComandas] = useState(null);
@@ -57,7 +57,8 @@ export default function EventoPOS() {
   const [hojaGasto, setHojaGasto] = useState(false);
   const [gasto, setGasto] = useState({});
   const [hojaProds, setHojaProds] = useState(false);
-  const [prodsEdit, setProdsEdit] = useState({});
+  const [prodsEdit, setProdsEdit] = useState({ productos: {}, stocks: {} });
+  const [stockEdit, setStockEdit] = useState({});
   const [texto, setTexto] = useState(null);
   const [ahora, setAhora] = useState(Date.now());
   const [imprimir, setImprimir] = useState(null); // pedido a imprimir
@@ -79,14 +80,18 @@ export default function EventoPOS() {
   }, [imprimir]);
 
   const cargarPedidos = useCallback(async () => {
-    const [{ data: cs }, { data: ms }, { data: ev }] = await Promise.all([
+    const [{ data: cs }, { data: ms }, { data: ev }, { data: ps }, { data: ss }] = await Promise.all([
       supabase.from('comandas').select('*, comanda_items(*)').eq('evento_id', id).order('id'),
       supabase.from('movimientos').select('*').eq('evento_id', id).is('comanda_id', null).order('id'),
       supabase.from('eventos').select('*').eq('id', id).maybeSingle(),
+      supabase.from('evento_productos').select('*').eq('evento_id', id).order('orden'),
+      supabase.from('evento_stocks').select('*').eq('evento_id', id).order('orden'),
     ]);
     setComandas(cs || []);
     setMovs(ms || []);
     if (ev) setEvento(ev);
+    if (ps) setProductos(ps);
+    if (ss) setStocks(ss);
   }, [id]);
 
   const cargarTodo = useCallback(async () => {
@@ -119,22 +124,34 @@ export default function EventoPOS() {
     return () => { supabase.removeChannel(canal); clearInterval(t); document.removeEventListener('visibilitychange', alVolver); };
   }, [id, cargarTodo, cargarPedidos]);
 
-  // productos del evento con los datos del artículo
+  // productos del evento con los datos del artículo, su tipo (color/emoji) y su grupo de stock
   const menu = useMemo(() => {
     const am = Object.fromEntries(articulos.map((a) => [a.id, a]));
-    const ro = Object.fromEntries(rubros.map((r, i) => [r.id, i]));
-    return productos.filter((p) => am[p.articulo_id]).map((p) => ({ ...am[p.articulo_id], precio_ev: Number(p.precio), llevado: p.llevado, color: COLORES[(ro[am[p.articulo_id].rubro_id] ?? 6) % COLORES.length], ordenRubro: ro[am[p.articulo_id].rubro_id] ?? 99 }))
-      .sort((x, y) => x.ordenRubro - y.ordenRubro || (x.orden || 0) - (y.orden || 0));
+    const rn = Object.fromEntries(rubros.map((r) => [r.id, r.nombre]));
+    return productos.filter((p) => am[p.articulo_id]).map((p) => {
+      const a = am[p.articulo_id];
+      const tipo = tipoDe(a, rn[a.rubro_id]);
+      return { ...a, ep_id: p.id, precio_ev: Number(p.precio), stock_id: p.stock_id, consume: Number(p.consume || 1), agotado: p.agotado, tipo, emoji: emojiDe(tipo, a.nombre), ...TIPOS[tipo] };
+    }).sort((x, y) => ORDEN_TIPO[x.tipo] - ORDEN_TIPO[y.tipo] || (x.orden || 0) - (y.orden || 0));
   }, [productos, articulos, rubros]);
   const mitades = menu.filter((m) => m.permite_mitad);
 
-  const r = useMemo(() => (comandas && evento ? resumenEvento({ evento, productos, comandas, movs, articulos }) : null), [evento, productos, comandas, movs, articulos]);
+  const r = useMemo(() => (comandas && evento ? resumenEvento({ evento, productos, comandas, movs, articulos, stocks }) : null), [evento, productos, comandas, movs, articulos, stocks]);
+  // stock que queda de cada grupo, contando el pedido que se está armando
+  const est = useMemo(() => calcularStocks(stocks, productos, comandas || [], items), [stocks, productos, comandas, items]);
+  // ¿se puede vender una unidad más de este producto? (mitad = ½ masa)
+  const puede = (p, cuanto = 1) => {
+    if (p.agotado) return false;
+    const s = est[p.stock_id];
+    return !s || s.libre === null || s.libre >= p.consume * cuanto - 1e-9;
+  };
 
   // ---------- armar pedido ----------
   const total = items.reduce((a, i) => a + i.cantidad * i.precio_unit, 0);
   const cantDe = (aid) => items.filter((i) => i.articulo_id === aid && !i.es_mitad).reduce((a, i) => a + i.cantidad, 0);
 
   function sumar(p) {
+    if (!puede(p)) { avisar(p.agotado ? `${p.nombre}: AGOTADO` : `No queda stock de ${est[p.stock_id]?.nombre || p.nombre}`, 'error'); return; }
     setItems((its) => {
       const ya = its.find((i) => i.articulo_id === p.id && !i.es_mitad);
       if (ya) return its.map((i) => (i === ya ? { ...i, cantidad: i.cantidad + 1 } : i));
@@ -143,6 +160,7 @@ export default function EventoPOS() {
     if (navigator.vibrate) navigator.vibrate(15);
   }
   function elegirMitad(p) {
+    if (!puede(p, 0.5) || (mitadA && !puede(mitadA, 1))) { avisar(p.agotado ? `${p.nombre}: AGOTADO` : 'No quedan masas', 'error'); return; }
     if (!mitadA) { setMitadA(p); return; }
     const a = mitadA;
     setItems((its) => [...its, { key: clave(), articulo_id: a.id, articulo2_id: p.id, es_mitad: true, descripcion: `½ ${a.nombre} + ½ ${p.nombre}`, rubro_id: a.rubro_id, cantidad: 1, precio_unit: Math.round(a.precio_ev / 2 + p.precio_ev / 2) }]);
@@ -167,8 +185,10 @@ export default function EventoPOS() {
       });
       const { data: c } = await supabase.from('comandas').select('numero').eq('id', cid).maybeSingle();
       const vuelto = forma === 'efectivo' && num(cobro?.pagaCon) > total ? num(cobro.pagaCon) - total : 0;
+      const alertas = Object.values(est).filter((x) => x.quedan !== null && x.enPedido > 0 && x.libre <= Number(x.minimo || 0))
+        .map((x) => (x.libre <= 0 ? `${emojiDe(x.tipo, x.nombre)} ${x.nombre}: SE TERMINÓ` : `${emojiDe(x.tipo, x.nombre)} Quedan ${cant(x.libre)} · ${x.nombre}`));
       setListo({
-        numero: c?.numero, nombre: nombre.trim(), total, cobrado: cobrar, forma, vuelto,
+        alertas, numero: c?.numero, nombre: nombre.trim(), total, cobrado: cobrar, forma, vuelto,
         ticket: { numero: c?.numero, cliente_nombre: nombre.trim(), notas: nota.trim(), total, forma_pago: forma, estado: cobrar ? 'cobrada' : 'abierta', created_at: new Date().toISOString(),
           monto_efectivo: forma === 'mixto' ? num(cobro.efectivo) : null, comanda_items: items.map((i) => ({ ...i, id: i.key, subtotal: i.cantidad * i.precio_unit })) },
       });
@@ -216,20 +236,33 @@ export default function EventoPOS() {
     } catch (e) { avisar(e.message, 'error'); }
   }
   function abrirProds() {
-    const v = {};
-    productos.forEach((p) => { v[p.articulo_id] = { precio: String(Number(p.precio)), llevado: p.llevado === null ? '' : String(Number(p.llevado)) }; });
-    setProdsEdit(v);
+    setProdsEdit(valorDesdeEvento(productos, stocks, articulos.filter((a) => a.activo)));
     setHojaProds(true);
   }
   async function guardarProds() {
     try {
-      const activos = articulos.filter((a) => a.activo);
-      await rpc('guardar_productos_evento', { p_evento: Number(id), p_productos: productosParaGuardar(prodsEdit, activos) });
-      const { data } = await supabase.from('evento_productos').select('*').eq('evento_id', id).order('orden');
-      setProductos(data || []);
+      const g = paraGuardar(prodsEdit, articulos.filter((a) => a.activo), rubros);
+      await rpc('guardar_productos_evento', { p_evento: Number(id), p_productos: g.productos, p_stocks: g.stocks });
+      await cargarPedidos();
       setHojaProds(false);
-      avisar('Productos actualizados ✔');
+      avisar('Productos y stock actualizados ✔');
     } catch (e) { avisar(e.message, 'error'); }
+  }
+  // stock: cambiar lo que llevamos / el aviso, y marcar agotados
+  async function guardarStock(sid) {
+    const v = stockEdit[sid] || {};
+    const { error } = await supabase.from('evento_stocks').update({
+      llevado: String(v.llevado ?? '').trim() === '' ? null : num(v.llevado), minimo: num(v.minimo),
+    }).eq('id', sid);
+    if (error) { avisar(error.message, 'error'); return; }
+    setStockEdit((x) => { const y = { ...x }; delete y[sid]; return y; });
+    avisar('Stock guardado ✔');
+    cargarPedidos();
+  }
+  async function marcarAgotado(p, valor) {
+    setProductos((ps) => ps.map((x) => (x.id === p.ep_id ? { ...x, agotado: valor } : x)));
+    const { error } = await supabase.from('evento_productos').update({ agotado: valor }).eq('id', p.ep_id);
+    if (error) { avisar(error.message, 'error'); cargarPedidos(); } else avisar(valor ? `${p.nombre}: AGOTADO` : `${p.nombre}: disponible de nuevo`);
   }
   function cerrar() {
     setConfirmar({
@@ -289,6 +322,7 @@ export default function EventoPOS() {
       <div className="pos-tabs">
         {abierto && <button className={tab === 'pedir' ? 'activo' : ''} onClick={() => setTab('pedir')}>🧾 Pedir</button>}
         <button className={tab === 'pedidos' ? 'activo' : ''} onClick={() => setTab('pedidos')}>👨‍🍳 Pedidos{enCocina.length ? <span className="pos-badge">{enCocina.length}</span> : null}</button>
+        <button className={tab === 'stock' ? 'activo' : ''} onClick={() => setTab('stock')}>📦 Stock{Object.values(est).some((x) => x.alerta) || menu.some((m) => m.agotado) ? <span className="pos-badge ambar">!</span> : null}</button>
         <button className={tab === 'resumen' ? 'activo' : ''} onClick={() => setTab('resumen')}>📊 Resumen</button>
       </div>
       </div>
@@ -296,21 +330,40 @@ export default function EventoPOS() {
       {/* ===================== TOMAR PEDIDO ===================== */}
       {tab === 'pedir' && abierto && (
         <>
-          {menu.length === 0 ? <Vacio texto="El evento no tiene productos. Agregalos en “Resumen” → Productos y precios." /> : (
+          {Object.values(est).some((x) => x.quedan !== null) && (
+            <div className="stock-tira" onClick={() => setTab('stock')}>
+              {Object.values(est).filter((x) => x.quedan !== null).map((x) => (
+                <span key={x.id} className={`st-chip${x.libre <= 0 ? ' sin' : x.libre <= Number(x.minimo || 0) ? ' poco' : ''}`}>
+                  {emojiDe(x.tipo, x.nombre)} {x.nombre.replace(' (unidades)', '')} <b>{cant(Math.max(x.libre, 0))}</b>
+                </span>
+              ))}
+            </div>
+          )}
+          {menu.length === 0 ? <Vacio texto="El evento no tiene productos. Agregalos en 📦 Stock → Productos y precios." /> : (
             <div className="pos-grid">
               {menu.map((p) => {
                 const q = cantDe(p.id);
+                const ok = puede(p);
+                const s = est[p.stock_id];
+                const propio = s && String(s.clave).startsWith('art-') && s.quedan !== null;
                 return (
-                  <button key={p.id} className={`pos-prod${q ? ' en-pedido' : ''}`} style={{ '--c': p.color }} onClick={() => sumar(p)}>
+                  <button key={p.id} className={`pos-prod tipo-${p.tipo}${q ? ' en-pedido' : ''}${!ok ? ' agotado' : ''}${p.tipo === 'sfija' && p.consume < 12 ? ' media' : ''}`}
+                    style={{ '--c': p.color, '--f': p.fondo }} onClick={() => sumar(p)}>
+                    <span className="pp-emoji">{p.emoji}</span>
                     <span className="pp-nom">{p.nombre}</span>
                     <span className="pp-pre">{money(p.precio_ev)}</span>
+                    {p.tipo === 'sfija' && <span className="pp-unid">×{cant(p.consume)}</span>}
+                    {propio && ok && <span className="pp-quedan">quedan {cant(Math.max(s.libre, 0))}</span>}
+                    {!ok && <span className="pp-agotado">{p.agotado ? 'AGOTADO' : 'SIN STOCK'}</span>}
                     {q > 0 && <span className="prod-cant">{cant(q)}</span>}
                   </button>
                 );
               })}
               {mitades.length >= 2 && (
-                <button className="pos-prod mitad" onClick={() => { setMitadA(null); setHojaMitad(true); }}>
-                  <span className="pp-nom">½ y ½</span><span className="pp-pre">Mitad y mitad</span>
+                <button className={`pos-prod mitad${mitades.some((m) => puede(m, 1)) ? '' : ' agotado'}`} style={{ '--c': TIPOS.pizza.color }}
+                  onClick={() => { if (!mitades.some((m) => puede(m, 1))) { avisar('No quedan masas', 'error'); return; } setMitadA(null); setHojaMitad(true); }}>
+                  <span className="pp-emoji">🍕</span><span className="pp-nom">½ y ½</span><span className="pp-pre">Mitad y mitad</span>
+                  {!mitades.some((m) => puede(m, 1)) && <span className="pp-agotado">SIN MASAS</span>}
                 </button>
               )}
             </div>
@@ -407,6 +460,58 @@ export default function EventoPOS() {
         </>
       )}
 
+      {/* ===================== STOCK ===================== */}
+      {tab === 'stock' && (
+        <>
+          {Object.values(est).map((x) => {
+            const t = TIPOS[x.tipo] || TIPOS.otro;
+            const ed = stockEdit[x.id];
+            const pct = x.quedan === null || !Number(x.llevado) ? 0 : Math.max(0, Math.min(100, (x.quedan / Number(x.llevado)) * 100));
+            return (
+              <div key={x.id} className={`stock-card${x.sinStock ? ' sin' : x.alerta ? ' poco' : ''}`} style={{ '--c': t.color, '--f': t.fondo }}>
+                <div className="sc-top">
+                  <span className="sc-nom">{emojiDe(x.tipo, x.nombre)} {x.nombre}</span>
+                  {x.quedan === null ? <span className="suave chico-t">sin control</span>
+                    : <span className="sc-quedan">{cant(Math.max(x.quedan, 0))}<small> de {cant(x.llevado)}</small></span>}
+                </div>
+                {x.quedan !== null && <div className="barra" style={{ marginTop: 8 }}><div style={{ width: pct + '%', background: x.sinStock ? 'var(--rojo)' : x.alerta ? 'var(--amarillo)' : 'var(--c)' }} /></div>}
+                <div className="sc-sub">
+                  Usado {cant(x.usado)}{x.quedan !== null ? ` · aviso al llegar a ${cant(x.minimo)}` : ''}
+                  {x.sinStock ? ' · ⛔ SE TERMINÓ' : x.alerta ? ' · ⚠️ queda poco' : ''}
+                </div>
+                {ed ? (
+                  <div className="sp-datos" style={{ marginLeft: 0 }}>
+                    <label><small>Llevamos (total)</small><input inputMode="numeric" value={ed.llevado} onChange={(e) => setStockEdit({ ...stockEdit, [x.id]: { ...ed, llevado: e.target.value } })} /></label>
+                    <label><small>Avisar cuando queden</small><input inputMode="numeric" value={ed.minimo} onChange={(e) => setStockEdit({ ...stockEdit, [x.id]: { ...ed, minimo: e.target.value } })} /></label>
+                    <button className="btn borde chico" onClick={() => setStockEdit((s2) => { const y = { ...s2 }; delete y[x.id]; return y; })}>Cancelar</button>
+                    <button className="btn verde chico" onClick={() => guardarStock(x.id)}>Guardar</button>
+                  </div>
+                ) : (
+                  <button className="btn borde chico" style={{ marginTop: 8 }} onClick={() => setStockEdit({ ...stockEdit, [x.id]: { llevado: x.llevado === null ? '' : String(Number(x.llevado)), minimo: String(Number(x.minimo) || '') } })}>
+                    ✏️ Cambiar cantidad / aviso
+                  </button>
+                )}
+              </div>
+            );
+          })}
+
+          <div className="tarjeta">
+            <h2>🚫 Marcar agotados</h2>
+            <p className="suave chico-t" style={{ margin: '0 0 6px' }}>Si se termina un gusto (ej: pepperoni), apagalo acá y no se puede vender más. Se ve en los dos celulares.</p>
+            {menu.map((p) => (
+              <div key={p.id} className="agotado-fila">
+                <span>{p.emoji} {p.nombre}</span>
+                <button className={`switch${p.agotado ? ' off' : ''}`} onClick={() => marcarAgotado(p, !p.agotado)} aria-label={p.agotado ? 'Marcar disponible' : 'Marcar agotado'}>
+                  <span>{p.agotado ? 'AGOTADO' : 'Hay'}</span>
+                </button>
+              </div>
+            ))}
+          </div>
+          <button className="btn borde bloque" onClick={abrirProds}>✏️ Productos, precios y stock del evento</button>
+          <p className="suave chico-t centro">Los pedidos anulados devuelven el stock solos.</p>
+        </>
+      )}
+
       {/* ===================== CÓMO VAMOS ===================== */}
       {tab === 'resumen' && (
         <>
@@ -436,16 +541,27 @@ export default function EventoPOS() {
           <div className="tarjeta">
             <h2>🍕 Productos</h2>
             <div className="tabla-ev">
-              <div className="te-fila te-cab"><span>Producto</span><span>Vendido</span><span>Llevamos</span><span>Sobra</span></div>
+              <div className="te-fila te-cab dos"><span>Producto</span><span>Vendido</span><span>Total</span></div>
               {r.productos.map((p) => (
-                <div key={p.nombre} className="te-fila">
-                  <span>{p.nombre}<small className="suave"> {money(p.total)}</small></span>
+                <div key={p.nombre} className="te-fila dos">
+                  <span>{p.nombre}{p.agotado ? <small className="rojo-t"> agotado</small> : null}</span>
                   <b>{cant(p.vendido)}</b>
-                  <span>{p.llevado === null ? '—' : cant(p.llevado)}</span>
-                  <span className={p.llevado !== null && p.llevado - p.vendido <= 0 ? 'rojo-t' : ''}>{p.llevado === null ? '—' : p.llevado - p.vendido <= 0 ? 'Agotado' : cant(p.llevado - p.vendido)}</span>
+                  <span className="mono">{money(p.total)}</span>
                 </div>
               ))}
             </div>
+            {r.stocks.some((x) => x.llevado !== null) && (
+              <div className="tabla-ev" style={{ marginTop: 12 }}>
+                <div className="te-fila te-cab"><span>Stock</span><span>Llevamos</span><span>Usamos</span><span>Sobra</span></div>
+                {r.stocks.filter((x) => x.llevado !== null).map((x) => (
+                  <div key={x.id} className="te-fila">
+                    <span>{emojiDe(x.tipo, x.nombre)} {x.nombre}</span>
+                    <span>{cant(x.llevado)}</span><b>{cant(x.usado)}</b>
+                    <span className={x.quedan <= 0 ? 'rojo-t' : ''}>{x.quedan <= 0 ? 'Agotado' : cant(x.quedan)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="suave chico-t" style={{ marginTop: 6 }}>Las mitad y mitad suman ½ a cada gusto.</div>
           </div>
 
@@ -457,7 +573,7 @@ export default function EventoPOS() {
           )}
 
           <div className="grid2" style={{ marginBottom: 8 }}>
-            <button className="btn borde" onClick={abrirProds}>✏️ Productos y precios</button>
+            <button className="btn borde" onClick={() => setTab('stock')}>📦 Stock y agotados</button>
             <button className="btn verde" onClick={() => setTexto(textoEvento(evento, r))}>📲 Resumen a mi socia</button>
           </div>
           {abierto
@@ -514,8 +630,9 @@ export default function EventoPOS() {
       <Hoja abierta={hojaMitad} titulo={mitadA ? `½ ${mitadA.nombre} + ½ …` : 'Elegí la primera mitad'} onCerrar={() => { setHojaMitad(false); setMitadA(null); }}>
         <div className="pos-grid" style={{ marginTop: 0 }}>
           {mitades.map((p) => (
-            <button key={p.id} className={`pos-prod${mitadA?.id === p.id ? ' en-pedido' : ''}`} style={{ '--c': p.color }} onClick={() => elegirMitad(p)}>
-              <span className="pp-nom">{p.nombre}</span><span className="pp-pre">{money(p.precio_ev)}</span>
+            <button key={p.id} className={`pos-prod tipo-${p.tipo}${mitadA?.id === p.id ? ' en-pedido' : ''}${!puede(p, 0.5) ? ' agotado' : ''}`} style={{ '--c': p.color, '--f': p.fondo }} onClick={() => elegirMitad(p)}>
+              <span className="pp-emoji">{p.emoji}</span><span className="pp-nom">{p.nombre}</span><span className="pp-pre">{money(p.precio_ev)}</span>
+              {!puede(p, 0.5) && <span className="pp-agotado">{p.agotado ? 'AGOTADO' : 'SIN STOCK'}</span>}
             </button>
           ))}
         </div>
@@ -565,7 +682,7 @@ export default function EventoPOS() {
       </Hoja>
 
       <Hoja abierta={hojaProds} titulo="Productos del evento" onCerrar={() => setHojaProds(false)}
-        pie={<button className="btn primario bloque" disabled={!Object.keys(prodsEdit).length} onClick={guardarProds}>Guardar {Object.keys(prodsEdit).length} productos</button>}>
+        pie={<button className="btn primario bloque" disabled={!Object.keys(prodsEdit.productos || {}).length} onClick={guardarProds}>Guardar {Object.keys(prodsEdit.productos || {}).length} productos</button>}>
         <SelectorProductos articulos={articulos.filter((a) => a.activo)} rubros={rubros} valor={prodsEdit} onCambio={setProdsEdit} />
         <p className="suave chico-t centro">Los pedidos ya cargados no cambian de precio.</p>
       </Hoja>
@@ -609,6 +726,7 @@ export default function EventoPOS() {
             {listo.nombre && <div className="pl-nom">{listo.nombre}</div>}
             <div className="pl-det">{money(listo.total)} · {listo.cobrado ? `${iconoCuenta(listo.forma)} cobrado` : '⏳ sin cobrar'}</div>
             {listo.vuelto > 0 && <div className="pl-vuelto">Vuelto {money(listo.vuelto)}</div>}
+            {(listo.alertas || []).map((a) => <div key={a} className="pl-alerta">⚠️ {a}</div>)}
             <button className="btn borde grande bloque" style={{ marginTop: 18 }} onClick={(e) => { e.stopPropagation(); setImprimir(listo.ticket); }}>🖨 Imprimir</button>
             <button className="btn primario grande bloque" style={{ marginTop: 10 }}>Siguiente pedido →</button>
           </div>
