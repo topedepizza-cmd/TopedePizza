@@ -19,3 +19,10 @@ Borrá el ícono viejo de la pantalla de inicio. Abrí la URL nueva en Safari �
 
 ## Para empezar de cero después de probar
 `supabase/03_borrar_pruebas.sql` borra comandas, caja y turnos (no toca menú, cadetes ni usuarios).
+
+## 🎪 Actualización EVENTOS (nov/2026) — NO borra nada
+1. **Primero Supabase**: SQL Editor → New query → pegá TODO `supabase/04_EVENTOS.sql` → Run. Solo agrega tablas y columnas nuevas; las comandas, caja, usuarios y clientes quedan iguales.
+2. **Después GitHub**: subí (arrastrando, “Add file → Upload files”) estas carpetas/archivos pisando los que ya están:
+   - Nuevos: `app/eventos/page.js`, `app/evento/[id]/page.js`, `components/SelectorProductos.js`, `lib/eventos.js`, `supabase/04_EVENTOS.sql`
+   - Cambiados: `app/page.js`, `app/mas/page.js`, `app/informes/page.js`, `app/caja/page.js`, `app/caja/movimientos/page.js`, `app/comanda/[id]/page.js`, `app/globals.css`, `components/AppShell.js`, `supabase/TOPE_DE_PIZZA_ACTUALIZACION_SEGURA.sql`, `LEEME.md`
+3. Vercel publica solo. En la app: **Más → 🎪 Eventos**.
