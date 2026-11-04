@@ -892,8 +892,11 @@ begin
     insert into movimientos (jornada_id, tipo, cuenta, monto, concepto, detalle, comanda_id)
     values (v_j, 'ingreso', 'efectivo', c.vuelto_registrado, 'Devolución vuelto cadete', 'Comanda #' || c.numero, c.id);
   end if;
+  -- cobrar NO marca entregado (retiro o pedido pagado por adelantado sigue pendiente).
+  -- Solo un delivery que ya estaba "en camino" (el cadete vuelve con la plata) pasa a entregado.
   update comandas set estado = 'cobrada', forma_pago = v_forma, monto_efectivo = v_ef, cobrada_at = now(),
-         cobrada_jornada_id = v_j, estado_entrega = 'entregada'
+         cobrada_jornada_id = v_j,
+         estado_entrega = case when c.tipo_entrega = 'delivery' and c.estado_entrega = 'en_camino' then 'entregada' else c.estado_entrega end
   where id = p_id;
 end $$;
 

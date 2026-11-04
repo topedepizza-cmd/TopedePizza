@@ -201,11 +201,16 @@ export default function VistaComanda({ comanda: c, items, cadete, recargar, reci
         {c.notas && <div className="aviso" style={{ marginTop: 10, marginBottom: 0 }}>📝 {c.notas}</div>}
       </div>
 
-      {c.estado !== 'anulada' && c.tipo_entrega === 'delivery' && (
+      {c.estado !== 'anulada' && !c.evento_id && (
         <div className="tarjeta">
-          <h2>🛵 Estado de entrega</h2>
+          <h2>{c.tipo_entrega === 'delivery' ? '🛵 Estado de entrega' : '🏠 Estado del retiro'}</h2>
           <Chips valor={c.estado_entrega} onCambio={setEntrega}
-            opciones={[{ id: 'preparando', label: '👨‍🍳 Preparando' }, { id: 'en_camino', label: '🛵 En camino' }, { id: 'entregada', label: '✅ Entregada' }]} />
+            opciones={c.tipo_entrega === 'delivery'
+              ? [{ id: 'preparando', label: '👨‍🍳 Preparando' }, { id: 'en_camino', label: '🛵 En camino' }, { id: 'entregada', label: '✅ Entregada' }]
+              : [{ id: 'preparando', label: '👨‍🍳 Preparando' }, { id: 'en_camino', label: '🔔 Listo p/ retirar' }, { id: 'entregada', label: '✅ Retiró' }]} />
+          {c.estado_entrega !== 'entregada' && pagada && (
+            <div className="item-sub" style={{ marginTop: 8 }}>Ya está pago: queda en “Por entregar” hasta que lo marques {c.tipo_entrega === 'delivery' ? '✅ Entregada' : '✅ Retiró'}.</div>
+          )}
         </div>
       )}
 
