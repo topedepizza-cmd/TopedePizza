@@ -21,18 +21,28 @@ export default function Comandas() {
   const [comandas, setComandas] = useState(null);
   const [abiertas, setAbiertas] = useState([]);
   const [buscar, setBuscar] = useState('');
+  const [eventos, setEventos] = useState([]);
 
   const cargar = useCallback(async () => {
     try {
       const j = await rpc('jornada_actual');
       setJornada(j);
       const sel = '*, comanda_items(descripcion, cantidad), cadetes(nombre)';
-      const [{ data: hoy }, { data: ab }] = await Promise.all([
-        supabase.from('comandas').select(sel).eq('jornada_id', j.id).order('id', { ascending: false }),
-        supabase.from('comandas').select(sel).eq('estado', 'abierta').order('id', { ascending: false }),
+      // acá solo delivery / retiro: los pedidos de eventos van en su propia pantalla
+      let [{ data: hoy, error: e1 }, { data: ab }, { data: ev }] = await Promise.all([
+        supabase.from('comandas').select(sel).eq('jornada_id', j.id).is('evento_id', null).order('id', { ascending: false }),
+        supabase.from('comandas').select(sel).eq('estado', 'abierta').is('evento_id', null).order('id', { ascending: false }),
+        supabase.from('eventos').select('id, nombre').eq('abierto', true).order('id', { ascending: false }),
       ]);
+      if (e1) { // por si todavía no se corrió el SQL de eventos: funciona como antes
+        [{ data: hoy }, { data: ab }] = await Promise.all([
+          supabase.from('comandas').select(sel).eq('jornada_id', j.id).order('id', { ascending: false }),
+          supabase.from('comandas').select(sel).eq('estado', 'abierta').order('id', { ascending: false }),
+        ]);
+      }
       setComandas(hoy || []);
       setAbiertas(ab || []);
+      setEventos(ev || []);
     } catch (e) {
       avisar(e.message, 'error');
       setComandas([]);
@@ -76,9 +86,15 @@ export default function Comandas() {
         <BotonInstalar />
       </div>
 
+      {eventos.map((ev) => (
+        <Link key={ev.id} href={`/evento/${ev.id}`} className="banner-evento">
+          🎪 <span>Evento en curso: {ev.nombre}</span><b>Tomar pedidos ›</b>
+        </Link>
+      ))}
+
       <div className="kpis">
         <div className="kpi destacado">
-          <div className="k-label">Vendido hoy</div>
+          <div className="k-label">Vendido hoy{eventos.length ? ' (delivery)' : ''}</div>
           <div className="k-valor">{money(vendido)}</div>
           <div className="k-sub">{validas.length} comandas</div>
         </div>

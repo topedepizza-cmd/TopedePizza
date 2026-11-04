@@ -73,9 +73,10 @@ export default function AppShell({ children }) {
   }
   if (!session) return <div className="cargando-full"><img src="/logo-chico.png" alt={NOMBRE} /></div>;
 
-  const enComanda = pathname.startsWith('/comanda');
-  const activo = (href) => (href === '/' ? pathname === '/' || enComanda : pathname.startsWith(href) ||
-    (href === '/mas' && ['/clientes', '/informes', '/codificacion', '/config', '/cuenta'].some((p) => pathname.startsWith(p))));
+  // en la comanda y en la pantalla de venta del evento no va la barra de abajo
+  const enComanda = pathname.startsWith('/comanda') || pathname.startsWith('/evento/');
+  const activo = (href) => (href === '/' ? pathname === '/' || pathname.startsWith('/comanda') : pathname.startsWith(href) ||
+    (href === '/mas' && ['/clientes', '/informes', '/codificacion', '/config', '/cuenta', '/eventos'].some((p) => pathname.startsWith(p))));
   const nombreNegocio = config?.nombre_negocio || NOMBRE;
 
   return (

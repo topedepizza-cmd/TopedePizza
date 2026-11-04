@@ -25,6 +25,8 @@ function textoCierre({ jornada, movs, comandas, finales }) {
   l.push(`🧾 Comandas: ${validas.length} · Vendido: *${money(validas.reduce((a, c) => a + Number(c.total), 0))}*`);
   l.push(`💵 Cobrado en efectivo: ${money(ventaCuenta('efectivo'))}`);
   l.push(`📱 Cobrado por Mercado Pago: ${money(ventaCuenta('mercadopago'))}`);
+  const ventaEv = movs.filter((m) => m.evento_id).reduce((a, m) => a + (m.concepto === 'Venta' ? 1 : ['Anulación venta', 'Cobro deshecho'].includes(m.concepto) ? -1 : 0) * Number(m.monto), 0);
+  if (ventaEv) l.push(`🎪 De eso, en eventos: ${money(ventaEv)}`);
   if (abiertas.length) l.push(`⏳ Sin cobrar: ${abiertas.length} (${money(abiertas.reduce((a, c) => a + Number(c.total), 0))})`);
   const anuladas = comandas.length - validas.length;
   if (anuladas) l.push(`❌ Anuladas: ${anuladas}`);
@@ -58,6 +60,7 @@ export default function Caja() {
   const router = useRouter();
   const [movBorrar, setMovBorrar] = useState(null);
   const [trabajando, setTrabajando] = useState(false);
+  const [origen, setOrigen] = useState('todo'); // todo | delivery | eventos
 
   const cargar = useCallback(async () => {
     try {
@@ -82,7 +85,7 @@ export default function Caja() {
       const primero = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-01`;
       const { data: jm } = await supabase.from('jornadas').select('id').gte('fecha', primero);
       const ids = (jm || []).map((x) => x.id);
-      const mm = ids.length ? await traerTodo(() => supabase.from('movimientos').select('tipo, concepto, monto, cuenta').in('jornada_id', ids).order('id')) : [];
+      const mm = ids.length ? await traerTodo(() => supabase.from('movimientos').select('*').in('jornada_id', ids).order('id')) : [];
       const sum = (f) => mm.filter(f).reduce((a, x) => a + Number(x.monto), 0);
       setMes({
         nombre: hoy.toLocaleDateString('es-AR', { month: 'long' }),
@@ -90,6 +93,7 @@ export default function Caja() {
         gastos: sum((x) => x.tipo === 'egreso' && !INTERNOS_EGRESO.includes(x.concepto) && x.concepto !== 'Retiro socios'),
         retiros: sum((x) => x.concepto === 'Retiro socios'),
         cadete: sum((x) => x.concepto === 'Pago cadete'),
+        eventos: sum((x) => x.evento_id && x.concepto === 'Venta') - sum((x) => x.evento_id && ['Anulación venta', 'Cobro deshecho'].includes(x.concepto)),
       });
     } catch (e) { avisar(e.message, 'error'); }
   }, [avisar]);
@@ -136,8 +140,11 @@ export default function Caja() {
     setTrabajando(false);
   }
 
+  // con / sin eventos (los saldos siempre son la plata real de toda la caja)
+  const pasaOrigen = (m) => origen === 'todo' || (origen === 'eventos' ? !!m.evento_id : !m.evento_id);
+  const hayEventos = movs.some((m) => m.evento_id);
   // la lista de hoy sin los cobros deshechos/anulados (errores corregidos)
-  const movsVer = depurarMovimientos(movs);
+  const movsVer = depurarMovimientos(movs).filter(pasaOrigen);
 
   async function borrarMov() {
     try {
@@ -170,7 +177,7 @@ export default function Caja() {
   if (!j || !saldos) return <><Cabecera titulo="Caja" /><Cargando /></>;
 
   const totalSaldo = Number(saldos.efectivo) + Number(saldos.transferencia) + Number(saldos.mercadopago);
-  const suma = (filtro) => movs.filter(filtro).reduce((a, m) => a + Number(m.monto), 0);
+  const suma = (filtro) => movs.filter((m) => pasaOrigen(m) && filtro(m)).reduce((a, m) => a + Number(m.monto), 0);
   const ventas = suma((m) => m.concepto === 'Venta') - suma((m) => ['Anulación venta', 'Cobro deshecho'].includes(m.concepto));
   const gastos = suma((m) => m.tipo === 'egreso' && !['Vuelto a cadete', 'Movimiento entre cuentas', 'Anulación venta', 'Cobro deshecho'].includes(m.concepto));
   const conceptos = (hoja === 'egreso' ? config?.conceptos_egreso : config?.conceptos_ingreso) || [];
@@ -214,8 +221,13 @@ export default function Caja() {
         </div>
       )}
 
+      {(hayEventos || origen !== 'todo') && (
+        <div className="origen">
+          <Chips chico valor={origen} onCambio={setOrigen} opciones={[{ id: 'todo', label: 'Todo' }, { id: 'delivery', label: '🛵 Sin eventos' }, { id: 'eventos', label: '🎪 Solo eventos' }]} />
+        </div>
+      )}
       <div className="kpis">
-        <div className="kpi"><div className="k-label">Ventas cobradas hoy</div><div className="k-valor verde-t">{money(ventas)}</div></div>
+        <div className="kpi"><div className="k-label">Ventas cobradas hoy{origen === 'eventos' ? ' (eventos)' : origen === 'delivery' ? ' (sin eventos)' : ''}</div><div className="k-valor verde-t">{money(ventas)}</div></div>
         <div className="kpi"><div className="k-label">Gastos hoy</div><div className="k-valor rojo-t">{money(gastos)}</div></div>
       </div>
 
@@ -240,6 +252,7 @@ export default function Caja() {
         <div className="tarjeta">
           <h2 style={{ textTransform: 'none' }}>📅 Resumen de {mes.nombre}</h2>
           <div className="resumen-linea"><span>Ventas cobradas</span><b className="mono verde-t">{money(mes.ventas)}</b></div>
+          {mes.eventos > 0 && <div className="resumen-linea suave chico-t"><span>   de eso, en eventos 🎪</span><span className="mono">{money(mes.eventos)}</span></div>}
           <div className="resumen-linea"><span>Gastos (con cadetes)</span><b className="mono rojo-t">−{money(mes.gastos)}</b></div>
           <div className="resumen-linea suave chico-t"><span>   de eso, pagos a cadetes</span><span className="mono">{money(mes.cadete)}</span></div>
           <div className="resumen-linea total"><span>Resultado</span><span className={`mono ${mes.ventas - mes.gastos >= 0 ? 'verde-t' : 'rojo-t'}`}>{money(mes.ventas - mes.gastos)}</span></div>
@@ -252,7 +265,7 @@ export default function Caja() {
         Movimientos de hoy
         {movs.length > 0 && <Link href="/caja/movimientos" className="chico-t rojo-t" style={{ fontFamily: 'inherit' }}>Ver todos ›</Link>}
       </div>
-      {movs.length === 0 ? <Vacio texto="Sin movimientos todavía" /> : (
+      {movsVer.length === 0 ? <Vacio texto="Sin movimientos todavía" /> : (
         <div className="lista">
           {movsVer.slice(0, 12).map((m) => { const cat = CATEGORIAS[categoriaMov(m)]; return (
             <div key={m.id} className="item clic" onClick={() => (m.comanda_id ? router.push(`/comanda/${m.comanda_id}`) : m.liquidacion_id ? router.push('/cadete') : setMovBorrar(m))}>

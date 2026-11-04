@@ -5,6 +5,7 @@ import { useApp } from '@/components/AppShell';
 import { Cabecera } from '@/components/ui';
 
 const OPCIONES = [
+  { href: '/eventos', icono: '🎪', t: 'Eventos', s: 'Iniciar un evento y tomar pedidos rápidos' },
   { href: '/cuenta', icono: '👤', t: 'Mi cuenta', s: 'Mi usuario y contraseña' },
   { href: '/clientes', icono: '👥', t: 'Clientes', s: 'Agenda, historial y mejores clientes' },
   { href: '/informes', icono: '📊', t: 'Informes', s: 'Más vendidos, rubros, días, horarios, clientes' },

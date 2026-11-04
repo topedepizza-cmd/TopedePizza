@@ -40,6 +40,7 @@ function Movimientos() {
     ? { modo: sp.get('desde') === sp.get('hasta') ? 'dia' : 'rango', desde: sp.get('desde'), hasta: sp.get('hasta') || sp.get('desde') }
     : { modo: sp.get('modo') || 'hoy' }));
   const [cuenta, setCuenta] = useState(sp.get('cuenta') || 'todas');
+  const [origen, setOrigen] = useState(sp.get('origen') || 'todo'); // todo | delivery | eventos
   const [vista, setVista] = useState(() => vistaInicial(sp));
   const [concepto, setConcepto] = useState('todos');
   const [buscar, setBuscar] = useState('');
@@ -77,8 +78,9 @@ function Movimientos() {
   // filtros comunes (cuenta + búsqueda) → sirven para las tarjetas de arriba
   const base = useMemo(() => {
     const b = buscar.trim().toLowerCase();
-    return (datos?.movs || []).filter((m) => (cuenta === 'todas' || m.cuenta === cuenta) && (!b || `${m.concepto} ${m.detalle || ''}`.toLowerCase().includes(b)));
-  }, [datos, cuenta, buscar]);
+    return (datos?.movs || []).filter((m) => (cuenta === 'todas' || m.cuenta === cuenta) && (!b || `${m.concepto} ${m.detalle || ''}`.toLowerCase().includes(b))
+      && (origen === 'todo' || (origen === 'eventos' ? !!m.evento_id : !m.evento_id)));
+  }, [datos, cuenta, buscar, origen]);
 
   const filtrados = useMemo(() => base.filter((m) =>
     VISTAS[vista].includes(m.cat) && (vista !== 'todo' || verInternos || m.cat !== 'interno') &&
@@ -92,7 +94,7 @@ function Movimientos() {
   const egresos = filtrados.filter((m) => m.tipo === 'egreso').reduce((a, m) => a + Number(m.monto), 0);
 
   // saldo de la cuenta: arrancó + todo lo que se movió = ahora/al cierre
-  const verSaldos = datos?.jornadas.length > 0 && vista === 'todo' && concepto === 'todos' && !buscar.trim();
+  const verSaldos = datos?.jornadas.length > 0 && vista === 'todo' && concepto === 'todos' && !buscar.trim() && origen === 'todo';
   const ctas = cuenta === 'todas' ? ['efectivo', 'mercadopago', 'transferencia'] : [cuenta];
   const saldoIni = verSaldos ? ctas.reduce((a, c) => a + Number(datos.jornadas[0]['si_' + c] || 0), 0) : 0;
   const saldoFin = verSaldos && datos.finales ? ctas.reduce((a, c) => a + Number(datos.finales[c] || 0), 0) : 0;
@@ -133,8 +135,8 @@ function Movimientos() {
 
   // ---------- descargas ----------
   const tituloLista = TITULOS[vista];
-  const filtrosTxt = [cuenta !== 'todas' ? nombreCuenta(cuenta) : 'Todas las cuentas', concepto !== 'todos' ? concepto : '', buscar.trim() ? `“${buscar.trim()}”` : ''].filter(Boolean).join(' · ');
-  const nombreArchivo = (ext) => `caja_${tituloLista.toLowerCase().replace(/ /g, '_')}_${r.isoA}${r.isoA !== r.isoB ? '_al_' + r.isoB : ''}${cuenta !== 'todas' ? '_' + cuenta : ''}.${ext}`;
+  const filtrosTxt = [cuenta !== 'todas' ? nombreCuenta(cuenta) : 'Todas las cuentas', origen === 'eventos' ? 'Solo eventos' : origen === 'delivery' ? 'Sin eventos' : '', concepto !== 'todos' ? concepto : '', buscar.trim() ? `“${buscar.trim()}”` : ''].filter(Boolean).join(' · ');
+  const nombreArchivo = (ext) => `caja_${tituloLista.toLowerCase().replace(/ /g, '_')}_${r.isoA}${r.isoA !== r.isoB ? '_al_' + r.isoB : ''}${cuenta !== 'todas' ? '_' + cuenta : ''}${origen !== 'todo' ? '_' + (origen === 'eventos' ? 'eventos' : 'sin_eventos') : ''}.${ext}`;
 
   async function bajarExcel() {
     setBajando(true);
@@ -143,7 +145,7 @@ function Movimientos() {
         { nombre: tituloLista, filas: filtrados.map((m) => ({
           'Fecha caja': fechaCorta(fechaDe[m.jornada_id]), 'Fecha y hora': new Date(m.created_at).toLocaleString('es-AR'),
           Categoría: CATEGORIAS[m.cat].nombre, Tipo: m.tipo === 'ingreso' ? 'Ingreso' : 'Egreso', Cuenta: nombreCuenta(m.cuenta),
-          Concepto: m.concepto, Detalle: m.detalle || '',
+          Concepto: m.concepto, Detalle: m.detalle || '', Origen: m.evento_id ? 'Evento' : 'Delivery / local',
           Ingreso: m.tipo === 'ingreso' ? Number(m.monto) : 0, Egreso: m.tipo === 'egreso' ? Number(m.monto) : 0,
           Neto: m.tipo === 'ingreso' ? Number(m.monto) : -Number(m.monto),
         })) },
@@ -200,6 +202,9 @@ function Movimientos() {
 
       <FiltroFechas valor={periodo} onCambio={setPeriodo} />
       <Chips valor={cuenta} onCambio={setCuenta} opciones={[{ id: 'todas', label: 'Todas las cuentas' }, ...CUENTAS.map((c) => ({ id: c.id, label: `${c.icono} ${c.nombre}` }))]} />
+      <div style={{ marginTop: 8 }}>
+        <Chips chico valor={origen} onCambio={setOrigen} opciones={[{ id: 'todo', label: 'Con y sin eventos' }, { id: 'delivery', label: '🛵 Sin eventos' }, { id: 'eventos', label: '🎪 Solo eventos' }]} />
+      </div>
 
       {!datos ? <Cargando /> : (
         <>

@@ -22,29 +22,38 @@ export default function Informes() {
   const [datos, setDatos] = useState(null);
   const [verArt, setVerArt] = useState('unidades');
   const [bajando, setBajando] = useState(false);
+  const [origen, setOrigen] = useState('todo'); // todo | delivery | eventos
+  const [eventoSel, setEventoSel] = useState(''); // '' = todos los eventos
 
   const r = useMemo(() => rangoFechas(periodo), [periodo]);
   const rAnt = useMemo(() => rangoAnterior(periodo), [periodo]);
   useEffect(() => { precargarDescargas(); }, []);
   const pasaDia = useCallback((f) => !diasSem.length || diasSem.includes(diaOperativo(f).getDay()), [diasSem]);
+  // con / sin eventos
+  const pasaOrigen = useCallback((x) => origen === 'todo' || (origen === 'delivery' ? !x.evento_id
+    : (eventoSel ? String(x.evento_id) === String(eventoSel) : !!x.evento_id)), [origen, eventoSel]);
 
   const cargar = useCallback(async () => {
     setDatos(null);
     try {
-      const [comandas, movs, { data: rubros }, { data: articulos }] = await Promise.all([
+      const [comandas, movs, { data: rubros }, { data: articulos }, { data: eventos }] = await Promise.all([
         traerTodo(() => supabase.from('comandas')
-          .select('id, total, envio, descuento, forma_pago, monto_efectivo, cliente_id, cliente_nombre, created_at, tipo_entrega, comanda_items(articulo_id, articulo2_id, es_mitad, descripcion, rubro_id, cantidad, subtotal)')
+          .select('id, total, envio, descuento, forma_pago, monto_efectivo, cliente_id, cliente_nombre, created_at, tipo_entrega, evento_id, comanda_items(articulo_id, articulo2_id, es_mitad, descripcion, rubro_id, cantidad, subtotal)')
           .neq('estado', 'anulada').gte('created_at', r.desde.toISOString()).lt('created_at', r.hasta.toISOString()).order('id')),
-        traerTodo(() => supabase.from('movimientos').select('tipo, concepto, monto, comanda_id, liquidacion_id, created_at')
+        traerTodo(() => supabase.from('movimientos').select('tipo, concepto, monto, comanda_id, liquidacion_id, created_at, evento_id')
           .gte('created_at', r.desde.toISOString()).lt('created_at', r.hasta.toISOString()).order('id')),
         supabase.from('rubros').select('*'),
         supabase.from('articulos').select('id, nombre, costo, rubro_id'),
+        supabase.from('eventos').select('id, nombre, abierto_at').order('id', { ascending: false }).limit(300),
       ]);
       // período anterior (mismo largo) para comparar
-      const anterior = await traerTodo(() => supabase.from('comandas').select('id, total, created_at')
+      const anterior = await traerTodo(() => supabase.from('comandas').select('id, total, created_at, evento_id')
         .neq('estado', 'anulada').gte('created_at', rAnt.desde.toISOString()).lt('created_at', rAnt.hasta.toISOString()).order('id'));
-      setDatos({ comandas, movs, anterior, rubros: rubros || [], articulos: articulos || [] });
-    } catch (e) { avisar(e.message, 'error'); setDatos({ comandas: [], movs: [], anterior: [], rubros: [], articulos: [] }); }
+      setDatos({ comandas, movs, anterior, rubros: rubros || [], articulos: articulos || [], eventos: eventos || [] });
+    } catch (e) {
+      avisar(/evento/.test(e.message) ? 'Falta correr el SQL de eventos en Supabase (supabase/04_EVENTOS.sql)' : e.message, 'error');
+      setDatos({ comandas: [], movs: [], anterior: [], rubros: [], articulos: [], eventos: [] });
+    }
   }, [r, rAnt, avisar]);
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -52,14 +61,21 @@ export default function Informes() {
     if (!datos) return null;
     const artMap = Object.fromEntries(datos.articulos.map((a) => [a.id, a]));
     const rubMap = Object.fromEntries(datos.rubros.map((x) => [x.id, x.nombre]));
-    const arts = {}, rubs = {}, clis = {}, dias = {}, horas = {}, formas = {}, porDia = {};
+    const arts = {}, rubs = {}, clis = {}, dias = {}, horas = {}, formas = {}, porDia = {}, evs = {};
+    const evNom = Object.fromEntries((datos.eventos || []).map((e) => [e.id, e]));
+    let ventasDelivery = 0, ventasEventos = 0, nDelivery = 0, nEventos = 0;
     let ventas = 0, envios = 0, unidades = 0, costo = 0, conCosto = false;
-    const comandas = datos.comandas.filter((c) => pasaDia(c.created_at));
-    const ant = datos.anterior.filter((c) => pasaDia(c.created_at));
+    const comandas = datos.comandas.filter((c) => pasaDia(c.created_at) && pasaOrigen(c));
+    const ant = datos.anterior.filter((c) => pasaDia(c.created_at) && pasaOrigen(c));
     const ventasAnt = ant.reduce((a, c) => a + Number(c.total), 0);
     comandas.forEach((c) => {
       const t = Number(c.total);
       ventas += t; envios += Number(c.envio);
+      if (c.evento_id) {
+        ventasEventos += t; nEventos++;
+        const ev = evNom[c.evento_id];
+        (evs[c.evento_id] ||= { nombre: ev?.nombre || 'Evento', fecha: ev?.abierto_at, total: 0, n: 0, id: c.evento_id }); evs[c.evento_id].total += t; evs[c.evento_id].n++;
+      } else { ventasDelivery += t; nDelivery++; }
       const d = diaOperativo(c.created_at);
       const dn = d.getDay();
       (dias[dn] ||= { nombre: DIAS[dn], total: 0, n: 0, fechas: new Set() }); dias[dn].total += t; dias[dn].n++; dias[dn].fechas.add(isoDia(d));
@@ -73,7 +89,7 @@ export default function Informes() {
       const kd = isoDia(d);
       (porDia[kd] ||= { nombre: d.toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit', month: '2-digit' }), total: 0, n: 0, k: kd }); porDia[kd].total += t; porDia[kd].n++;
       const kc = c.cliente_id ? 'c' + c.cliente_id : 'n' + (c.cliente_nombre || 'Sin nombre').toLowerCase();
-      (clis[kc] ||= { nombre: c.cliente_nombre || 'Sin nombre', total: 0, n: 0 }); clis[kc].total += t; clis[kc].n++;
+      if (!c.evento_id) { (clis[kc] ||= { nombre: c.cliente_nombre || 'Sin nombre', total: 0, n: 0 }); clis[kc].total += t; clis[kc].n++; } // los pedidos de eventos no cuentan como clientes
       (c.comanda_items || []).forEach((i) => {
         const q = Number(i.cantidad), st = Number(i.subtotal);
         unidades += q;
@@ -92,7 +108,7 @@ export default function Informes() {
     const gastosObj = {};
     let gastos = 0;
     datos.movs.forEach((m) => {
-      if (m.tipo !== 'egreso' || INTERNOS.includes(m.concepto) || !pasaDia(m.created_at)) return;
+      if (m.tipo !== 'egreso' || INTERNOS.includes(m.concepto) || !pasaDia(m.created_at) || !pasaOrigen(m)) return;
       gastos += Number(m.monto);
       (gastosObj[m.concepto] ||= { nombre: m.concepto, total: 0 }); gastosObj[m.concepto].total += Number(m.monto);
     });
@@ -104,10 +120,19 @@ export default function Informes() {
       dias: Object.values(dias).map((x) => ({ ...x, prom: x.total / x.fechas.size })).sort((a, b) => b.prom - a.prom),
       horas: Object.values(horas).sort((a, b) => ((a.h + 21) % 24) - ((b.h + 21) % 24)),
       formas: top(formas), porDia: Object.values(porDia).sort((a, b) => b.k.localeCompare(a.k)), gastosLista: top(gastosObj),
+      ventasDelivery, ventasEventos, nDelivery, nEventos, evs: top(evs),
     };
-  }, [datos, pasaDia]);
+  }, [datos, pasaDia, pasaOrigen]);
 
-  const etiquetaDias = diasSem.length ? ' · solo ' + [...diasSem].sort().map((d) => DIAS[d]).join(', ') : '';
+  const nomEvento = eventoSel ? (datos?.eventos || []).find((e) => String(e.id) === String(eventoSel))?.nombre : '';
+  const etiquetaDias = (diasSem.length ? ' · solo ' + [...diasSem].sort().map((d) => DIAS[d]).join(', ') : '')
+    + (origen === 'delivery' ? ' · sin eventos' : origen === 'eventos' ? ` · solo eventos${nomEvento ? ': ' + nomEvento : ''}` : '');
+  // eventos que tuvieron ventas en el período (para elegir uno)
+  const eventosPeriodo = useMemo(() => {
+    if (!datos) return [];
+    const ids = new Set(datos.comandas.filter((c) => c.evento_id).map((c) => c.evento_id));
+    return (datos.eventos || []).filter((e) => ids.has(e.id));
+  }, [datos]);
   const archivo = (ext) => `informe_${r.isoA}${r.isoA !== r.isoB ? '_al_' + r.isoB : ''}.${ext}`;
 
   async function bajarExcel() {
@@ -119,7 +144,8 @@ export default function Informes() {
           const f = new Date(c.created_at); const pp = partesPago(c);
           return {
             Fecha: diaOperativo(c.created_at).toLocaleDateString('es-AR'), Hora: f.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
-            Cliente: c.cliente_nombre || '', Entrega: c.tipo_entrega === 'retiro' ? 'Retira' : 'Delivery', 'Forma de pago': nombreCuenta(c.forma_pago),
+            Origen: c.evento_id ? 'Evento: ' + ((datos.eventos || []).find((e) => e.id === c.evento_id)?.nombre || '') : 'Delivery / local',
+            Cliente: c.cliente_nombre || '', Entrega: c.evento_id ? 'Evento' : c.tipo_entrega === 'retiro' ? 'Retira' : 'Delivery', 'Forma de pago': nombreCuenta(c.forma_pago),
             Detalle: (c.comanda_items || []).map((i) => `${cant(i.cantidad)} ${i.descripcion}`).join(' | '),
             Envío: Number(c.envio) || 0, Descuento: Number(c.descuento) || 0, Total: Number(c.total) || 0, Efectivo: pp.efectivo, 'Mercado Pago': pp.mercadopago,
           };
@@ -129,6 +155,7 @@ export default function Informes() {
         { nombre: 'Por día', filas: [...inf.porDia].reverse().map((x) => ({ Día: x.nombre, Comandas: x.n, Total: x.total })) },
         { nombre: 'Clientes', filas: inf.clis.map((x) => ({ Cliente: x.nombre, Pedidos: x.n, Total: x.total })) },
         { nombre: 'Gastos', filas: inf.gastosLista.map((x) => ({ Concepto: x.nombre, Total: x.total })) },
+        ...(inf.evs.length ? [{ nombre: 'Eventos', filas: inf.evs.map((x) => ({ Evento: x.nombre, Fecha: x.fecha ? new Date(x.fecha).toLocaleDateString('es-AR') : '', Pedidos: x.n, Total: x.total })) }] : []),
       ]);
     } catch (e) { avisar('No se pudo generar el Excel: ' + e.message, 'error'); }
     setBajando(false);
@@ -155,6 +182,9 @@ export default function Informes() {
             filas: inf.dias.map((x) => [x.nombre, x.fechas.size, money(x.prom), Math.round(x.n / x.fechas.size)]) },
           { titulo: 'Ventas por día', columnas: ['Día', 'Comandas', 'Total'], alinearDerecha: [1, 2], filas: [...inf.porDia].reverse().map((x) => [x.nombre, x.n, money(x.total)]) },
           { titulo: 'Clientes que más compran', columnas: ['Cliente', 'Pedidos', 'Total'], alinearDerecha: [1, 2], filas: inf.clis.map((x) => [x.nombre, x.n, money(x.total)]) },
+          ...(origen === 'todo' && inf.nEventos ? [{ titulo: 'Origen de las ventas', columnas: ['Origen', 'Comandas', 'Total'], alinearDerecha: [1, 2],
+            filas: [['Delivery / local', inf.nDelivery, money(inf.ventasDelivery)], ['Eventos', inf.nEventos, money(inf.ventasEventos)]] }] : []),
+          ...(inf.evs.length ? [{ titulo: 'Eventos', columnas: ['Evento', 'Pedidos', 'Total'], alinearDerecha: [1, 2], filas: inf.evs.map((x) => [x.nombre, x.n, money(x.total)]) }] : []),
           ...(inf.gastosLista.length ? [{ titulo: 'Gastos por concepto', columnas: cols2('Concepto', 'Total'), alinearDerecha: [1],
             filas: inf.gastosLista.map((x) => [x.nombre, money(x.total)]), pie: ['Total', money(inf.gastos)] }] : []),
         ],
@@ -183,6 +213,16 @@ export default function Informes() {
             onClick={() => setDiasSem((x) => (x.includes(d) ? x.filter((y) => y !== d) : [...x, d]))}>{DIAS[d].slice(0, 3)}</button>
         ))}
       </div>
+      <div className="campo-label">Ventas de</div>
+      <div className="origen">
+        <Chips valor={origen} onCambio={(v) => { setOrigen(v); setEventoSel(''); }} opciones={[{ id: 'todo', label: 'Todo' }, { id: 'delivery', label: '🛵 Sin eventos' }, { id: 'eventos', label: '🎪 Solo eventos' }]} />
+        {origen === 'eventos' && eventosPeriodo.length > 0 && (
+          <select style={{ marginTop: 8 }} value={eventoSel} onChange={(e) => setEventoSel(e.target.value)}>
+            <option value="">Todos los eventos del período</option>
+            {eventosPeriodo.map((e) => <option key={e.id} value={e.id}>{e.nombre} · {new Date(e.abierto_at).toLocaleDateString('es-AR')}</option>)}
+          </select>
+        )}
+      </div>
       <div className="descargas">
         <button className="btn borde" disabled={bajando || !inf?.n} onClick={bajarExcel}>📊 Excel</button>
         <button className="btn borde" disabled={bajando || !inf?.n} onClick={bajarPDF}>📄 PDF con logo</button>
@@ -198,6 +238,20 @@ export default function Informes() {
           </div>
           {inf.conCosto && (
             <div className="aviso verde">Margen bruto estimado (con costos cargados): {money(inf.ventas - inf.envios - inf.costo)} · {Math.round(((inf.ventas - inf.envios - inf.costo) / Math.max(inf.ventas - inf.envios, 1)) * 100)}%</div>
+          )}
+
+          {origen === 'todo' && inf.nEventos > 0 && (
+            <div className="tarjeta">
+              <h2>🛵 Delivery vs 🎪 Eventos</h2>
+              <Barra texto={`🛵 Delivery / local (${inf.nDelivery})`} valor={inf.ventasDelivery} max={Math.max(inf.ventasDelivery, inf.ventasEventos)} sub={`${money(inf.ventasDelivery)} · ${Math.round((inf.ventasDelivery / inf.ventas) * 100)}%`} />
+              <Barra texto={`🎪 Eventos (${inf.nEventos})`} valor={inf.ventasEventos} max={Math.max(inf.ventasDelivery, inf.ventasEventos)} sub={`${money(inf.ventasEventos)} · ${Math.round((inf.ventasEventos / inf.ventas) * 100)}%`} />
+            </div>
+          )}
+          {inf.evs.length > 0 && origen !== 'delivery' && (
+            <div className="tarjeta">
+              <h2>🎪 Eventos</h2>
+              {inf.evs.map((x) => <Barra key={x.id} texto={`${x.nombre}${x.fecha ? ' · ' + new Date(x.fecha).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' }) : ''}`} valor={x.total} max={inf.evs[0].total} sub={`${money(x.total)} · ${x.n} ped.`} />)}
+            </div>
           )}
 
           <div className="tarjeta">

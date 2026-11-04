@@ -44,7 +44,8 @@ function PaginaComanda() {
   }
   if (!datos) return <Cargando />;
   if (datos.error) return <Vacio texto="Comanda no encontrada (puede que la hayan eliminado)" />;
-  if (editar && datos.c.estado === 'abierta') return <EditorComanda key={`e${datos.c.id}`} comanda={datos.c} itemsIniciales={datos.items} />;
+  // los pedidos de eventos se corrigen desde el evento (anular y cargar de nuevo)
+  if (editar && datos.c.estado === 'abierta' && !datos.c.evento_id) return <EditorComanda key={`e${datos.c.id}`} comanda={datos.c} itemsIniciales={datos.items} />;
   return <VistaComanda comanda={datos.c} items={datos.items} cadete={datos.cadete} recargar={cargar} recienCreada={nueva} />;
 }
 
